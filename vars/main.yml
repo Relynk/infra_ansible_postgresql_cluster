@@ -11,7 +11,7 @@ cluster_vip: "" # IP address for client access to the databases in the cluster (
 vip_interface: "{{ ansible_default_ipv4.interface }}" # interface name (e.g., "ens32").
 # Note: VIP-based solutions such as keepalived or vip-manager may not function correctly in cloud environments like AWS.
 
-patroni_cluster_name: "postgres-cluster" # the cluster name (must be unique for each cluster)
+patroni_cluster_name: "main-cluster" # the cluster name (must be unique for each cluster)
 patroni_install_version: "3.3.0" # or 'latest'
 
 patroni_superuser_username: "postgres"
