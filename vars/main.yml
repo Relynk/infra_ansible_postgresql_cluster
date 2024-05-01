@@ -1,674 +1,1710 @@
----
-# ---------------------------------------------------------------------
-# Proxy variables (optional) for download packages using a proxy server
-proxy_env: {} # yamllint disable rule:braces
-#  http_proxy: http://10.128.64.9:3128
-#  https_proxy: http://10.128.64.9:3128
-# ---------------------------------------------------------------------
-
-# Cluster variables
-cluster_vip: "" # IP address for client access to the databases in the cluster (optional).
-vip_interface: "{{ ansible_default_ipv4.interface }}" # interface name (e.g., "ens32").
-# Note: VIP-based solutions such as keepalived or vip-manager may not function correctly in cloud environments like AWS.
-
-patroni_cluster_name: "main-cluster" # the cluster name (must be unique for each cluster)
-patroni_install_version: "3.3.0" # or 'latest'
-
-patroni_superuser_username: "postgres"
-patroni_superuser_password: "postgres-pass-1234!" # please change password
-patroni_replication_username: "replicator"
-patroni_replication_password: "replicator-pass-1234!" # please change password
-
-synchronous_mode: false # or 'true' for enable synchronous database replication
-synchronous_mode_strict: false # if 'true' then block all client writes to the master, when a synchronous replica is not available
-synchronous_node_count: 1 # number of synchronous standby databases
-
-# Load Balancing
-with_haproxy_load_balancing: true # or 'true' if you want to install and configure the load-balancing
-haproxy_listen_port:
-  master: 5000
-  replicas: 5001
-  replicas_sync: 5002
-  replicas_async: 5003
-  # The following ('_direct') ports are used for direct connections to the PostgreSQL database,
-  # bypassing the PgBouncer connection pool (if 'pgbouncer_install' is 'true').
-  # Uncomment the relevant lines if you need to set up direct connections.
-  #  master_direct: 6000
-  #  replicas_direct: 6001
-  #  replicas_sync_direct: 6002
-  #  replicas_async_direct: 6003
-  stats: 7000
-haproxy_maxconn:
-  global: 100000
-  master: 10000
-  replica: 10000
-haproxy_timeout:
-  client: "60m"
-  server: "60m"
-
-# keepalived (if 'cluster_vip' is specified and 'with_haproxy_load_balancing' is 'true')
-keepalived_virtual_router_id: "{{ cluster_vip.split('.')[3] | int }}" # The last octet of 'cluster_vip' IP address is used by default.
-# virtual_router_id - must be unique in the network (available values are 0..255).
-
-# vip-manager (if 'cluster_vip' is specified and 'with_haproxy_load_balancing' is 'false')
-vip_manager_version: "2.3.0" # version to install
-vip_manager_conf: "/etc/patroni/vip-manager.yml"
-vip_manager_interval: "1000" # time (in milliseconds) after which vip-manager wakes up and checks if it needs to register or release ip addresses.
-vip_manager_iface: "{{ vip_interface }}" # interface to which the virtual ip will be added
-vip_manager_ip: "{{ cluster_vip }}" # the virtual ip address to manage
-vip_manager_mask: "24" # netmask for the virtual ip
-
-# DCS (Distributed Consensus Store)
-dcs_exists: false # or 'true' if you don't want to deploy a new etcd cluster
-dcs_type: "etcd" # or 'consul'
-
-# if dcs_type: "etcd" and dcs_exists: false
-etcd_version: "3.5.11" # version for deploy etcd cluster
-etcd_data_dir: "/var/lib/etcd"
-etcd_cluster_name: "etcd-{{ patroni_cluster_name }}" # ETCD_INITIAL_CLUSTER_TOKEN
-
-# if dcs_type: "etcd" and dcs_exists: true
-patroni_etcd_hosts: [] # list of servers of an existing etcd cluster
-#  - { host: "10.128.64.140", port: "2379" }
-#  - { host: "10.128.64.142", port: "2379" }
-#  - { host: "10.128.64.143", port: "2379" }
-patroni_etcd_namespace: "service" # (optional) etcd namespace (prefix)
-patroni_etcd_username: "etcadmin" # (optional) username for etcd authentication
-patroni_etcd_password: "etc-pass-1234" # (optional) password for etcd authentication
-patroni_etcd_protocol: "https" # (optional) http or https, if not specified http is used
-
-# more options you can specify in the roles/patroni/templates/patroni.yml.j2
-# https://patroni.readthedocs.io/en/latest/yaml_configuration.html#etcd
-# https://patroni.readthedocs.io/en/latest/yaml_configuration.html#consul
-
-# if dcs_type: "consul"
-consul_version: "1.15.8"
-consul_config_path: "/etc/consul"
-consul_configd_path: "{{ consul_config_path }}/conf.d"
-consul_data_path: "/var/lib/consul"
-consul_domain: "consul" # Consul domain name
-consul_datacenter: "dc1" # Datacenter label (can be specified for each host in the inventory)
-consul_disable_update_check: true # Disables automatic checking for security bulletins and new version releases
-consul_enable_script_checks: true # This controls whether health checks that execute scripts are enabled on this agent
-consul_enable_local_script_checks: true # Enable them when they are defined in the local configuration files
-consul_ui: false # Enable the consul UI?
-consul_syslog_enable: true # Enable logging to syslog
-consul_iface: "{{ ansible_default_ipv4.interface }}" # specify the interface name with a Private IP (ex. "enp7s0")
-# TLS
-# You can enable TLS encryption by dropping a CA certificate, server certificate, and server key in roles/consul/files/
-consul_tls_enable: false
-consul_tls_ca_crt: "ca.crt"
-consul_tls_server_crt: "server.crt"
-consul_tls_server_key: "server.key"
-# DNS
-consul_recursors: [] # List of upstream DNS servers
-consul_dnsmasq_enable: true # Enable DNS forwarding with Dnsmasq
-consul_dnsmasq_cache: 0 # dnsmasq cache-size (0 - disable caching)
-consul_dnsmasq_servers: "{{ nameservers }}" # Upstream DNS servers used by dnsmasq
-consul_join: [] # List of LAN servers of an existing consul cluster, to join.
-# - "10.128.64.140"
-# - "10.128.64.142"
-# - "10.128.64.143"
-
-# https://developer.hashicorp.com/consul/docs/discovery/services
-consul_services:
-  - name: "{{ patroni_cluster_name }}"
-    id: "{{ patroni_cluster_name }}-master"
-    tags: ["master", "primary"]
-    port: "{{ pgbouncer_listen_port }}" # or "{{ postgresql_port }}" if pgbouncer_install: false
-    checks:
-      - {
-          http: "http://{{ inventory_hostname }}:{{ patroni_restapi_port }}/primary",
-          interval: "2s",
-        }
-      - { args: ["systemctl", "status", "pgbouncer"], interval: "5s" } # comment out this check if pgbouncer_install: false
-  - name: "{{ patroni_cluster_name }}"
-    id: "{{ patroni_cluster_name }}-replica"
-    tags: ["replica"]
-    port: "{{ pgbouncer_listen_port }}"
-    checks:
-      - {
-          http: "http://{{ inventory_hostname }}:{{ patroni_restapi_port }}/replica?lag={{ patroni_maximum_lag_on_replica }}",
-          interval: "2s",
-        }
-      - { args: ["systemctl", "status", "pgbouncer"], interval: "5s" }
-#  - name: "{{ patroni_cluster_name }}"
-#    id: "{{ patroni_cluster_name }}-sync-replica"
-#    tags: ['sync-replica']
-#    port: "{{ pgbouncer_listen_port }}"
-#    checks:
-#      - { http: "http://{{ inventory_hostname }}:{{ patroni_restapi_port }}/sync", interval: "2s" }
-#      - { args: ["systemctl", "status", "pgbouncer"], interval: "5s" }
-#  - name: "{{ patroni_cluster_name }}"
-#    id: "{{ patroni_cluster_name }}-async-replica"
-#    tags: ['async-replica']
-#    port: "{{ pgbouncer_listen_port }}"
-#    checks:
-#      - { http: "http://{{ inventory_hostname }}:{{ patroni_restapi_port }}/async?lag={{ patroni_maximum_lag_on_replica }}", interval: "2s" }
-#      - { args: ["systemctl", "status", "pgbouncer"], interval: "5s" }
-
-# PostgreSQL variables
-postgresql_version: "16"
-# postgresql_data_dir: see vars/Debian.yml or vars/RedHat.yml
-postgresql_listen_addr: "0.0.0.0" # Listen on all interfaces. Or use "{{ inventory_hostname }},127.0.0.1" to listen on a specific IP address.
-postgresql_port: "5432"
-postgresql_encoding: "UTF8" # for bootstrap only (initdb)
-postgresql_locale: "en_US.UTF-8" # for bootstrap only (initdb)
-postgresql_data_checksums: true # for bootstrap only (initdb)
-postgresql_password_encryption_algorithm: "scram-sha-256" # or "md5" if your clients do not work with passwords encrypted with SCRAM-SHA-256
-
-# (optional) list of users to be created (if not already exists)
-postgresql_users:
-  - {
-      name: "{{ pgbouncer_auth_username }}",
-      password: "{{ pgbouncer_auth_password }}",
-      flags: "LOGIN",
-      role: "",
-    }
-#  - { name: "monitoring_auth_username", password: "monitoring_user_password", flags: "LOGIN", role: "pg_monitor" } # monitoring Service Account
-#  - { name: "mydb-user", password: "mydb-user-pass", flags: "SUPERUSER" }
-#  - { name: "", password: "", flags: "NOSUPERUSER" }
-#  - { name: "", password: "", flags: "NOSUPERUSER" }
-#  - { name: "", password: "", flags: "NOLOGIN" }
-
-# (optional) list of databases to be created (if not already exists)
-postgresql_databases: []
-#  - { db: "mydatabase", encoding: "UTF8", lc_collate: "ru_RU.UTF-8", lc_ctype: "ru_RU.UTF-8", owner: "mydb-user" }
-#  - { db: "mydatabase2", encoding: "UTF8", lc_collate: "ru_RU.UTF-8", lc_ctype: "ru_RU.UTF-8", owner: "mydb-user", conn_limit: "50" }
-#  - { db: "", encoding: "UTF8", lc_collate: "en_US.UTF-8", lc_ctype: "en_US.UTF-8", owner: "" }
-#  - { db: "", encoding: "UTF8", lc_collate: "en_US.UTF-8", lc_ctype: "en_US.UTF-8", owner: "" }
-
-# (optional) list of schemas to be created (if not already exists)
-postgresql_schemas: []
-#  - { schema: "myschema", db: "mydatabase", owner: "mydb-user" }
-
-# (optional) list of database extensions to be created (if not already exists)
-postgresql_extensions: []
-#  - { ext: "pg_stat_statements", db: "postgres" }
-#  - { ext: "pg_stat_statements", db: "mydatabase" }
-#  - { ext: "pg_stat_statements", db: "mydatabase", schema: "myschema" }
-#  - { ext: "pg_stat_statements", db: "" }
-#  - { ext: "pg_stat_statements", db: "" }
-#  - { ext: "pg_repack", db: "" }  # postgresql-<version>-repack package is required
-#  - { ext: "pg_stat_kcache", db: "" }  # postgresql-<version>-pg-stat-kcache package is required
-#  - { ext: "", db: "" }
-#  - { ext: "", db: "" }
-
-# postgresql parameters to bootstrap dcs (are parameters for example)
-postgresql_parameters:
-  - { option: "max_connections", value: "500" }
-  - { option: "superuser_reserved_connections", value: "5" }
-  - {
-      option: "password_encryption",
-      value: "{{ postgresql_password_encryption_algorithm }}",
-    }
-  - { option: "max_locks_per_transaction", value: "512" }
-  - { option: "max_prepared_transactions", value: "0" }
-  - { option: "huge_pages", value: "try" } # or "on" if you set "vm_nr_hugepages" in kernel parameters
-  - {
-      option: "shared_buffers",
-      value: "{{ (ansible_memtotal_mb * 0.25) | int }}MB",
-    } # by default, 25% of RAM
-  - {
-      option: "effective_cache_size",
-      value: "{{ (ansible_memtotal_mb * 0.75) | int }}MB",
-    } # by default, 75% of RAM
-  - { option: "work_mem", value: "128MB" } # please change this value
-  - { option: "maintenance_work_mem", value: "256MB" } # please change this value
-  - { option: "checkpoint_timeout", value: "15min" }
-  - { option: "checkpoint_completion_target", value: "0.9" }
-  - { option: "min_wal_size", value: "2GB" }
-  - { option: "max_wal_size", value: "8GB" } # or 16GB/32GB
-  - { option: "wal_buffers", value: "32MB" }
-  - { option: "default_statistics_target", value: "1000" }
-  - { option: "seq_page_cost", value: "1" }
-  - { option: "random_page_cost", value: "1.1" } # or "4" for HDDs with slower random access
-  - { option: "effective_io_concurrency", value: "200" } # or "2" for traditional HDDs with lower I/O parallelism
-  - { option: "synchronous_commit", value: "on" } # or 'off' if you can you lose single transactions in case of a crash
-  - { option: "autovacuum", value: "on" } # never turn off the autovacuum!
-  - { option: "autovacuum_max_workers", value: "5" }
-  - { option: "autovacuum_vacuum_scale_factor", value: "0.01" } # or 0.005/0.001
-  - { option: "autovacuum_analyze_scale_factor", value: "0.01" }
-  - { option: "autovacuum_vacuum_cost_limit", value: "500" } # or 1000/5000
-  - { option: "autovacuum_vacuum_cost_delay", value: "2" }
-  - { option: "autovacuum_naptime", value: "1s" }
-  - { option: "max_files_per_process", value: "4096" }
-  - { option: "archive_mode", value: "on" }
-  - { option: "archive_timeout", value: "1800s" }
-  - { option: "archive_command", value: "cd ." } # not doing anything yet with WAL-s
-  #  - { option: "archive_command", value: "{{ wal_g_archive_command }}" }  # archive WAL-s using WAL-G
-  #  - { option: "archive_command", value: "{{ pgbackrest_archive_command }}" }  # archive WAL-s using pgbackrest
-  - { option: "wal_level", value: "logical" }
-  - { option: "wal_keep_size", value: "2GB" }
-  - { option: "max_wal_senders", value: "10" }
-  - { option: "max_replication_slots", value: "10" }
-  - { option: "hot_standby", value: "on" }
-  - { option: "wal_log_hints", value: "on" }
-  - { option: "wal_compression", value: "on" }
-  - {
-      option: "shared_preload_libraries",
-      value: "pg_stat_statements,auto_explain",
-    }
-  - { option: "pg_stat_statements.max", value: "10000" }
-  - { option: "pg_stat_statements.track", value: "all" }
-  - { option: "pg_stat_statements.track_utility", value: "false" }
-  - { option: "pg_stat_statements.save", value: "true" }
-  - { option: "auto_explain.log_min_duration", value: "10s" } # enable auto_explain for 10-second logging threshold. Decrease this value if necessary
-  - { option: "auto_explain.log_analyze", value: "true" }
-  - { option: "auto_explain.log_buffers", value: "true" }
-  - { option: "auto_explain.log_timing", value: "false" }
-  - { option: "auto_explain.log_triggers", value: "true" }
-  - { option: "auto_explain.log_verbose", value: "true" }
-  - { option: "auto_explain.log_nested_statements", value: "true" }
-  - { option: "auto_explain.sample_rate", value: "0.01" } # enable auto_explain for 1% of queries logging threshold
-  - { option: "track_io_timing", value: "on" }
-  - { option: "log_lock_waits", value: "on" }
-  - { option: "log_temp_files", value: "0" }
-  - { option: "track_activities", value: "on" }
-  - { option: "track_activity_query_size", value: "4096" }
-  - { option: "track_counts", value: "on" }
-  - { option: "track_functions", value: "all" }
-  - { option: "log_checkpoints", value: "on" }
-  - { option: "logging_collector", value: "on" }
-  - { option: "log_truncate_on_rotation", value: "on" }
-  - { option: "log_rotation_age", value: "1d" }
-  - { option: "log_rotation_size", value: "0" }
-  - { option: "log_line_prefix", value: "'%t [%p-%l] %r %q%u@%d '" }
-  - { option: "log_filename", value: "postgresql-%a.log" }
-  - { option: "log_directory", value: "{{ postgresql_log_dir }}" }
-  - { option: "hot_standby_feedback", value: "on" } # allows feedback from a hot standby to the primary that will avoid query conflicts
-  - { option: "max_standby_streaming_delay", value: "30s" }
-  - { option: "wal_receiver_status_interval", value: "10s" }
-  - { option: "idle_in_transaction_session_timeout", value: "10min" } # reduce this timeout if possible
-  - { option: "jit", value: "off" }
-  - { option: "max_worker_processes", value: "24" }
-  - { option: "max_parallel_workers", value: "8" }
-  - { option: "max_parallel_workers_per_gather", value: "2" }
-  - { option: "max_parallel_maintenance_workers", value: "2" }
-  - { option: "tcp_keepalives_count", value: "10" }
-  - { option: "tcp_keepalives_idle", value: "300" }
-  - { option: "tcp_keepalives_interval", value: "30" }
-#  - { option: "old_snapshot_threshold", value: "60min" }
-#  - { option: "", value: "" }
-#  - { option: "", value: "" }
-
-# Set this variable to 'true' if you want the cluster to be automatically restarted
-# after changing the 'postgresql_parameters' variable that requires a restart in the 'config_pgcluster.yml' playbook.
-# By default, the cluster will not be automatically restarted.
-pending_restart: false
-
-# specify additional hosts that will be added to the pg_hba.conf
-postgresql_pg_hba:
-  - {
-      type: "local",
-      database: "all",
-      user: "{{ patroni_superuser_username }}",
-      address: "",
-      method: "trust",
-    }
-  - {
-      type: "local",
-      database: "all",
-      user: "{{ pgbouncer_auth_username }}",
-      address: "",
-      method: "trust",
-    } # required for pgbouncer auth_user
-  - {
-      type: "local",
-      database: "replication",
-      user: "{{ patroni_superuser_username }}",
-      address: "",
-      method: "trust",
-    }
-  - {
-      type: "local",
-      database: "all",
-      user: "all",
-      address: "",
-      method: "{{ postgresql_password_encryption_algorithm }}",
-    }
-  - {
-      type: "host",
-      database: "all",
-      user: "all",
-      address: "127.0.0.1/32",
-      method: "{{ postgresql_password_encryption_algorithm }}",
-    }
-  - {
-      type: "host",
-      database: "all",
-      user: "all",
-      address: "::1/128",
-      method: "{{ postgresql_password_encryption_algorithm }}",
-    }
-#  - { type: "host", database: "mydatabase", user: "mydb-user", address: "192.168.0.0/24", method: "{{ postgresql_password_encryption_algorithm }}" }
-#  - { type: "host", database: "all", user: "all", address: "192.168.0.0/24", method: "ident", options: "map=main" }  # use pg_ident
-
-# list of lines that Patroni will use to generate pg_ident.conf
-postgresql_pg_ident: []
-#  - { mapname: "main", system_username: "postgres", pg_username: "backup" }
-#  - { mapname: "", system_username: "", pg_username: "" }
-
-# the password file (~/.pgpass)
-postgresql_pgpass:
-  - "localhost:{{ postgresql_port }}:*:{{ patroni_superuser_username }}:{{ patroni_superuser_password }}"
-  - "{{ inventory_hostname }}:{{ postgresql_port }}:*:{{ patroni_superuser_username }}:{{ patroni_superuser_password }}"
-  - "*:{{ pgbouncer_listen_port }}:*:{{ patroni_superuser_username }}:{{ patroni_superuser_password }}"
-#  - hostname:port:database:username:password
-
-# PgBouncer parameters
-pgbouncer_install: true # or 'false' if you do not want to install and configure the pgbouncer service
-pgbouncer_processes: 1 # Number of pgbouncer processes to be used. Multiple processes use the so_reuseport option for better performance.
-pgbouncer_conf_dir: "/etc/pgbouncer"
-pgbouncer_log_dir: "/var/log/pgbouncer"
-pgbouncer_listen_addr: "0.0.0.0" # Listen on all interfaces. Or use "{{ inventory_hostname }}" to listen on a specific IP address.
-pgbouncer_listen_port: 6432
-pgbouncer_max_client_conn: 10000
-pgbouncer_max_db_connections: 1000
-pgbouncer_max_prepared_statements: 1024
-pgbouncer_default_pool_size: 20
-pgbouncer_query_wait_timeout: 120
-pgbouncer_default_pool_mode: "session"
-pgbouncer_admin_users: "{{ patroni_superuser_username }}" # comma-separated list of users, who are allowed to change settings
-pgbouncer_stats_users: "{{ patroni_superuser_username }}" # comma-separated list of users who are just allowed to use SHOW command
-pgbouncer_ignore_startup_parameters: "extra_float_digits,geqo,search_path"
-pgbouncer_auth_type: "{{ postgresql_password_encryption_algorithm }}"
-pgbouncer_auth_user: true # or 'false' if you want to manage the list of users for authentication in the database via userlist.txt
-pgbouncer_auth_username: pgbouncer # user who can query the database via the user_search function
-pgbouncer_auth_password: "pgbouncer-pass" # please change password
-pgbouncer_auth_dbname: "postgres"
-pgbouncer_client_tls_sslmode: "disable"
-pgbouncer_client_tls_key_file: ""
-pgbouncer_client_tls_cert_file: ""
-
-pgbouncer_pools:
-  - { name: "postgres", dbname: "postgres", pool_parameters: "" }
-#  - { name: "mydatabase", dbname: "mydatabase", pool_parameters: "pool_size=20 pool_mode=transaction" }
-#  - { name: "", dbname: "", pool_parameters: "" }
-#  - { name: "", dbname: "", pool_parameters: "" }
-
-# Extended variables (optional)
-patroni_restapi_listen_addr: "0.0.0.0" # Listen on all interfaces. Or use "{{ inventory_hostname }}" to listen on a specific IP address.
-patroni_restapi_port: 8008
-patroni_ttl: 30
-patroni_loop_wait: 10
-patroni_retry_timeout: 10
-patroni_master_start_timeout: 300
-patroni_maximum_lag_on_failover: 1048576 # (1MB) the maximum bytes a follower may lag to be able to participate in leader election.
-patroni_maximum_lag_on_replica: "100MB" # the maximum of lag that replica can be in order to be available for read-only queries.
-
-# https://patroni.readthedocs.io/en/latest/yaml_configuration.html#postgresql
-patroni_callbacks: []
-#  - {action: "on_role_change", script: ""}
-#  - {action: "on_stop", script: ""}
-#  - {action: "on_restart", script: ""}
-#  - {action: "on_reload", script: ""}
-#  - {action: "on_role_change", script: ""}
-
-# https://patroni.readthedocs.io/en/latest/replica_bootstrap.html#standby-cluster
-# Requirements:
-# 1. the cluster name for Standby Cluster must be unique ('patroni_cluster_name' variable)
-# 2. the IP addresses (or network) of the Standby Cluster servers must be added to the pg_hba.conf of the Main Cluster ('postgresql_pg_hba' variable).
-patroni_standby_cluster:
-  host: "" # an address of remote master
-  port: "5432" # a port of remote master
-#  primary_slot_name: ""  # which slot on the remote master to use for replication (optional)
-#  restore_command: ""  # command to restore WAL records from the remote master to standby leader (optional)
-#  recovery_min_apply_delay: ""  # how long to wait before actually apply WAL records on a standby leader (optional)
-
-# Permanent replication slots.
-# These slots will be preserved during switchover/failover.
-# https://patroni.readthedocs.io/en/latest/dynamic_configuration.html
-patroni_slots: []
-#  - slot: "logical_replication_slot" # the name of the permanent replication slot.
-#    type: "logical" # the type of slot. Could be 'physical' or 'logical' (if the slot is logical, you have to define 'database' and 'plugin').
-#    plugin: "pgoutput" # the plugin name for the logical slot.
-#    database: "postgres" # the database name where logical slots should be created.
-#  - slot: "test_logical_replication_slot"
-#    type: "logical"
-#    plugin: "pgoutput"
-#    database: "test"
-
-patroni_log_destination: stderr # or 'logfile'
-# if patroni_log_destination: logfile
-patroni_log_dir: /var/log/patroni
-patroni_log_level: info
-patroni_log_traceback_level: error
-patroni_log_format: "%(asctime)s %(levelname)s: %(message)s"
-patroni_log_dateformat: ""
-patroni_log_max_queue_size: 1000
-patroni_log_file_num: 4
-patroni_log_file_size: 25000000 # bytes
-patroni_log_loggers_patroni_postmaster: warning
-patroni_log_loggers_urllib3: warning # or 'debug'
-
-patroni_watchdog_mode: automatic # or 'off', 'required'
-patroni_watchdog_device: /dev/watchdog
-
-patroni_postgresql_use_pg_rewind: true # or 'false'
-# try to use pg_rewind on the former leader when it joins cluster as a replica.
-
-patroni_remove_data_directory_on_rewind_failure: false # or 'true' (if use_pg_rewind: 'true')
-# avoid removing the data directory on an unsuccessful rewind
-# if 'true', Patroni will remove the PostgreSQL data directory and recreate the replica.
-
-patroni_remove_data_directory_on_diverged_timelines: false # or 'true'
-# if 'true', Patroni will remove the PostgreSQL data directory and recreate the replica
-# if it notices that timelines are diverging and the former master can not start streaming from the new master.
-
-# https://patroni.readthedocs.io/en/latest/replica_bootstrap.html#bootstrap
-patroni_cluster_bootstrap_method: "initdb" # or "wal-g", "pgbackrest", "pg_probackup"
-
-# https://patroni.readthedocs.io/en/latest/replica_bootstrap.html#building-replicas
-patroni_create_replica_methods:
-  #  - pgbackrest
-  #  - wal_g
-  #  - pg_probackup
-  - basebackup
-
-pgbackrest:
-  - {
-      option: "command",
-      value: "/usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} --delta restore",
-    }
-  - { option: "keep_data", value: "True" }
-  - { option: "no_params", value: "True" }
-wal_g:
-  - {
-      option: "command",
-      value: "wal-g backup-fetch {{ postgresql_data_dir }} LATEST",
-    }
-  - { option: "no_params", value: "True" }
-basebackup:
-  - { option: "max-rate", value: "100M" }
-  - { option: "checkpoint", value: "fast" }
-#  - { option: "waldir", value: "{{ postgresql_wal_dir }}" }
-pg_probackup:
-  - { option: "command", value: "{{ pg_probackup_restore_command }}" }
-  - { option: "no_params", value: "true" }
-
-# "restore_command" written to recovery.conf when configuring follower (create replica)
-postgresql_restore_command: ""
-# postgresql_restore_command: "wal-g wal-fetch %f %p"  # restore WAL-s using WAL-G
-# postgresql_restore_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-get %f %p"  # restore WAL-s using pgbackrest
-
-# postgresql_restore_command: "pg_probackup-{{ pg_probackup_version }} archive-get -B
-# {{ pg_probackup_dir }} --instance {{ pg_probackup_instance }} --wal-file-path=%p
-# --wal-file-name=%f"  # restore WAL-s using pg_probackup
-
-# pg_probackup
-pg_probackup_install: false # or 'true'
-pg_probackup_install_from_postgrespro_repo: true # or 'false'
-pg_probackup_version: "{{ postgresql_version }}"
-pg_probackup_instance: "pg_probackup_instance_name"
-pg_probackup_dir: "/mnt/backup_dir"
-pg_probackup_threads: "4"
-pg_probackup_add_keys: "--recovery-target=latest --skip-external-dirs --no-validate"
-# ⚠️ Ensure there is a space at the beginning of each part to prevent commands from concatenating.
-pg_probackup_command_parts:
-  - "pg_probackup-{{ pg_probackup_version }}"
-  - " restore -B {{ pg_probackup_dir }}"
-  - " --instance {{ pg_probackup_instance }}"
-  - " -j {{ pg_probackup_threads }}"
-  - " {{ pg_probackup_add_keys }}"
-pg_probackup_restore_command: "{{ pg_probackup_command_parts | join('') }}"
-pg_probackup_patroni_cluster_bootstrap_command: "{{ pg_probackup_command_parts | join('') }}"
-
-# WAL-G
-wal_g_install: false # or 'true'
-wal_g_version: "3.0.0"
-wal_g_json: # config https://github.com/wal-g/wal-g#configuration
-  - {
-      option: "AWS_ACCESS_KEY_ID",
-      value: "{{ AWS_ACCESS_KEY_ID | default('') }}",
-    } # define values or pass via --extra-vars
-  - {
-      option: "AWS_SECRET_ACCESS_KEY",
-      value: "{{ AWS_SECRET_ACCESS_KEY | default('') }}",
-    } # define values or pass via --extra-vars
-  - { option: "WALG_S3_PREFIX", value: "{{ WALG_S3_PREFIX | default('') }}" } # define values or pass via --extra-vars
-  - { option: "WALG_COMPRESSION_METHOD", value: "brotli" } # or "lz4", "lzma", "zstd"
-  - { option: "WALG_DELTA_MAX_STEPS", value: "6" } # determines how many delta backups can be between full backups
-  - { option: "PGDATA", value: "{{ postgresql_data_dir }}" }
-  - { option: "PGHOST", value: "{{ postgresql_unix_socket_dir }}" }
-  - { option: "PGPORT", value: "{{ postgresql_port }}" }
-  - { option: "PGUSER", value: "{{ patroni_superuser_username }}" }
-#  - { option: "AWS_S3_FORCE_PATH_STYLE", value: "true" }  # to use Minio.io S3-compatible storage
-#  - { option: "AWS_ENDPOINT", value: "http://minio:9000" }  # to use Minio.io S3-compatible storage
-#  - { option: "", value: "" }
-wal_g_archive_command: "wal-g wal-push %p"
-wal_g_patroni_cluster_bootstrap_command: "wal-g backup-fetch {{ postgresql_data_dir }} LATEST"
-
-# Define job_parts outside of wal_g_cron_jobs
-# ⚠️ Ensure there is a space at the beginning of each part to prevent commands from concatenating.
-wal_g_backup_command:
-  - "[ $(curl -s -o /dev/null -w '%{http_code}' http://{{ inventory_hostname }}:{{ patroni_restapi_port }}) = '200' ]"
-  - " && wal-g backup-push {{ postgresql_data_dir }} > {{ postgresql_log_dir }}/walg_backup.log 2>&1"
-wal_g_delete_command:
-  - "[ $(curl -s -o /dev/null -w '%{http_code}' http://{{ inventory_hostname }}:{{ patroni_restapi_port }}) = '200' ]"
-  - " && wal-g delete retain FULL 4 --confirm > {{ postgresql_log_dir }}/walg_delete.log 2>&1"
-
-wal_g_cron_jobs:
-  - name: "WAL-G: Create daily backup"
-    user: "postgres"
-    file: /etc/cron.d/walg
-    minute: "30"
-    hour: "3"
-    day: "*"
-    month: "*"
-    weekday: "*"
-    job: "{{ wal_g_backup_command | join('') }}"
-  - name: "WAL-G: Delete old backups" # retain 4 full backups (adjust according to your company's backup retention policy)
-    user: "postgres"
-    file: /etc/cron.d/walg
-    minute: "30"
-    hour: "6"
-    day: "*"
-    month: "*"
-    weekday: "*"
-    job: "{{ wal_g_delete_command | join('') }}"
-
-# pgBackRest
-pgbackrest_install: false # or 'true'
-pgbackrest_install_from_pgdg_repo: true # or 'false'
-pgbackrest_stanza: "{{ patroni_cluster_name }}" # specify your --stanza
-pgbackrest_repo_type: "posix" # or "s3", "gcs", "azure"
-pgbackrest_repo_host: "" # dedicated repository host (optional)
-pgbackrest_repo_user: "postgres"
-pgbackrest_conf_file: "/etc/pgbackrest/pgbackrest.conf"
-# config https://pgbackrest.org/configuration.html
-pgbackrest_conf:
-  global: # [global] section
-    - { option: "log-level-file", value: "detail" }
-    - { option: "log-path", value: "/var/log/pgbackrest" }
-    #    - { option: "repo1-host", value: "{{ pgbackrest_repo_host }}" }
-    #    - { option: "repo1-host-user", value: "{{ pgbackrest_repo_user }}" }
-    - { option: "repo1-type", value: "{{ pgbackrest_repo_type | lower }}" }
-    - { option: "repo1-path", value: "/var/lib/pgbackrest" }
-    - { option: "repo1-retention-full", value: "4" }
-    - { option: "repo1-retention-archive", value: "4" }
-    - { option: "start-fast", value: "y" }
-    - { option: "stop-auto", value: "y" }
-    - { option: "resume", value: "n" }
-    - { option: "link-all", value: "y" }
-    - { option: "spool-path", value: "/var/spool/pgbackrest" }
-    - { option: "archive-async", value: "y" } # Enables asynchronous WAL archiving (details: https://pgbackrest.org/user-guide.html#async-archiving)
-    - { option: "archive-get-queue-max", value: "1GiB" }
-  #    - { option: "archive-push-queue-max", value: "100GiB" }
-  #    - { option: "backup-standby", value: "y" } # When set to 'y', standby servers will be automatically added to the stanza section.
-  #    - { option: "", value: "" }
-  stanza: # [stanza_name] section
-    - { option: "process-max", value: "4" }
-    - { option: "log-level-console", value: "info" }
-    - { option: "recovery-option", value: "recovery_target_action=promote" }
-    - { option: "pg1-socket-path", value: "{{ postgresql_unix_socket_dir }}" }
-    - { option: "pg1-path", value: "{{ postgresql_data_dir }}" }
-#    - { option: "", value: "" }
-# (optional) dedicated backup server config (if "repo_host" is set)
-pgbackrest_server_conf:
-  global:
-    - { option: "log-level-file", value: "detail" }
-    - { option: "log-level-console", value: "info" }
-    - { option: "log-path", value: "/var/log/pgbackrest" }
-    - { option: "repo1-type", value: "{{ pgbackrest_repo_type | lower }}" }
-    - { option: "repo1-path", value: "/var/lib/pgbackrest" }
-    - { option: "repo1-retention-full", value: "4" }
-    - { option: "repo1-retention-archive", value: "4" }
-    - { option: "repo1-bundle", value: "y" }
-    - { option: "repo1-block", value: "y" }
-    - { option: "start-fast", value: "y" }
-    - { option: "stop-auto", value: "y" }
-    - { option: "resume", value: "n" }
-    - { option: "link-all", value: "y" }
-    - { option: "archive-check", value: "y" }
-    - { option: "archive-copy", value: "n" }
-    - { option: "backup-standby", value: "y" }
-#    - { option: "", value: "" }
-# the stanza section will be generated automatically
-
-pgbackrest_archive_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-push %p"
-
-pgbackrest_patroni_cluster_restore_command: "/usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} --delta restore" # restore from latest backup
-#  '/usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} --type=time "--target=2020-06-01 11:00:00+03" --delta restore'  # Point-in-Time Recovery (example)
-
-# By default, the cron jobs is created on the database server.
-# If 'repo_host' is defined, the cron jobs will be created on the pgbackrest server.
-pgbackrest_cron_jobs:
-  - name: "pgBackRest: Full Backup"
-    file: "/etc/cron.d/pgbackrest-{{ patroni_cluster_name }}"
-    user: "postgres"
-    minute: "30"
-    hour: "6"
-    day: "*"
-    month: "*"
-    weekday: "0"
-    job: "pgbackrest --type=full --stanza={{ pgbackrest_stanza }} backup"
-    # job: "if [ $(psql -tAXc 'select pg_is_in_recovery()') = 'f' ]; then pgbackrest --type=full --stanza={{ pgbackrest_stanza }} backup; fi"
-  - name: "pgBackRest: Diff Backup"
-    file: "/etc/cron.d/pgbackrest-{{ patroni_cluster_name }}"
-    user: "postgres"
-    minute: "30"
-    hour: "6"
-    day: "*"
-    month: "*"
-    weekday: "1-6"
-    job: "pgbackrest --type=diff --stanza={{ pgbackrest_stanza }} backup"
-    # job: "if [ $(psql -tAXc 'select pg_is_in_recovery()') = 'f' ]; then pgbackrest --type=diff --stanza={{ pgbackrest_stanza }} backup; fi"
-
-# PITR mode (if patroni_cluster_bootstrap_method: "pgbackrest" or "wal-g"):
-# 1) The database cluster directory will be cleaned (for "wal-g") or overwritten (for "pgbackrest" --delta restore).
-# 2) And also the patroni cluster "{{ patroni_cluster_name }}" will be removed from the DCS (if exist) before recovery.
-
-disable_archive_command: true # or 'false' to not disable archive_command after restore
-keep_patroni_dynamic_json: true # or 'false' to remove patroni.dynamic.json after restore (if exists)
-
-# Netdata - https://github.com/netdata/netdata
-netdata_install: false # or 'true' for install Netdata on postgresql cluster nodes (with kickstart.sh)
-netdata_install_options: "--stable-channel --disable-telemetry --dont-wait"
-netdata_conf:
-  web_bind_to: "*"
-  # https://learn.netdata.cloud/docs/store/change-metrics-storage
-  memory_mode: "dbengine" # The long-term metrics storage with efficient RAM and disk usage.
-  page_cache_size: 64 # Determines the amount of RAM in MiB that is dedicated to caching Netdata metric values.
-  dbengine_disk_space: 1024 # Determines the amount of disk space in MiB that is dedicated to storing Netdata metric values.
-
+$ANSIBLE_VAULT;1.1;AES256
+38623166373761393864656332376264333565653861653239333037346234306439613961623631
+3331343336353266306539353037623236366630333937340a316266653730303332323035633039
+66336632353932343131623032653763396562303834616261663637323136653637343163653935
+3432363636373761330a343730663765613531336234633231623838613865633535393734636661
+34393333363433323839343639313035313332343937623765316631633365643231343736323738
+37326234376664616337626436333866306431616534306135623962643063663432356532633837
+35626562623535316430373633633536646235616366663461353235643634646639343733626537
+64643435363733326563313136666663663934353365633133396236323231663861316534383035
+61626663643666613438623237633432306339656139656235616533393366373462363864393862
+66633362646264303533376338383664346338353332323963393065336464333362353730366332
+34663561656236383961653431343662303033626666353864633231656333313539313530653437
+63386264333161343432373134343236643530613638386533373631666636353933303662636264
+66366661336437333535353036366538386531396266613361333064316662353731616261656164
+36646233326166626364643732663565343461616466646662373539353339343837356362353462
+62666562336562653663663863306466633139653231343566333730353336623030663665633339
+62666136373839663335323034613736323436373463386436366239393263666637376137383134
+62303863343433343438656339616332353830623534313134633834656134346566353936383034
+65666361363731366337613632346561313934386534396633653666393830363666636232353562
+38613534333937363432383832643030343939363866363931363634376164643331376465396466
+64373166633964643365613365346136306665663562643261666333336634323332643766376235
+34636366393862393062363735386131323864303366366438393363316463623039353765333434
+34373163343538346135353734383361356563613065363235373736306336616363303735633931
+34373265323261316562373438393062663464666631383835633733343538323834306466366139
+39633430363338656462396133396239656435363633653863306639316530396363383936643566
+30373266376161373436343466306663373864623535653335346462386266363461386437306362
+32636363363531623866623761396361366563326635356231303337303034633633666630373631
+33313064613738343666616461663762636138346439386465363130643437666536623436646663
+62653664643461393738313330346133653565643130323135653537613263646464353961636537
+61336631326230393938623233383436393337626237383730613336663664356633333937343930
+36333465623230643939623961346237633935383938646261346264623339366532386464346530
+38396263326236393039616438366233333531316335633833633235383835386338393462663865
+61363437396338346262303436396464303731613337336165663331376465633665656435653364
+36666264396661383337333038623931353762396530336662326166623466636237353936323231
+64343130623862366134656630343163623633313164343032353832353430306162633762353364
+66343132333432643930323363326234313265353031663061326638653764626630663561653232
+34613439383431656662343661666537323731303133396335363564353765366337366563626532
+66396135323333333834623138633331326630323730303365356662643364656437393936366532
+61306137316438383532386538393862616362393137336531376565386430306138323265666434
+32616661636532643162383533653735383030396666633864353336626533623764306330386663
+34633335666237353038336665646637376636303161303531623335626562376466653863306162
+38636534303564353933663737336264376232383963353138663132363132393432363234666464
+35363964336362666531643535373365323333383836646337323461313766646666633061313234
+35363432386139613034313761396262306261616561613665316639336538383865323238393264
+61323832393434353665383535306566663030663230373962313131313230653464393730393036
+62653334303139373266666138346533356466306162323830626134336438363933353635333430
+62386339313963633531663863396138386662356465643034383838383132663236313531393135
+66653935653537356436346265616461643731343135376437386232393162613335643334396133
+39383637623466383764376437653536656562363330303665356339366138396134373962616431
+37623033336139623439646634353861343935323261646639346535383264393134343138613061
+65636134346638393736626237306266363063313562303633653035373032306236363631633435
+38373333646530316665373539623066633730326230616139626338356439373639393732666265
+61363938363339353766333834353333326230343934663631616163613361396334366665646233
+66303738376464646234623538343531343736313364636235306430616163653761353032343432
+37343566313961313763623138373038376134336564343631353431613266323034646131336639
+64663838303463386530303837313964353434653464343931343065333034643132323335643938
+32666439663234623535393937326161356161373334366137646265613135383331353263373132
+39333065386331633433633038313966313363323437383962666362323466636465323336646362
+66376333303862336462376132623430373666656464633931623065316432613265393532623737
+33316665393833353666663438616362336465646433393638333264333837376264336636313331
+35653737346639643830643032663361373265323163663338616131363139623061643335626439
+32313238363333363835636665396130303330313965363934333231396463616565663833343535
+32646438623132366462663462613865313138613038626664303761313666643739313565303730
+64646164396238623766383961336363303137383135633438653935383066656332333763653735
+30633034663861313738386136646436343661636131363663666334313039336231633636363863
+35393366633936643139653531323165636366396132313434306133303738656332653931326661
+35633830643135393865646338346336373835336464356437336639353037633636323538613538
+35363865663464396163353938393432663931363739636637333639653833333363616233656439
+66616238363839363032343536376134393738663538643130653464373565623233343530393439
+32643436353666656661383739636566353965623661633935313064643661313663613239323638
+66663134613565646132666134616436306263626466633233646361626166653963613833643461
+38616265323463643631656638613932363561396531646637356562633563626461343139346538
+66613632353838366133366662396238306537643534626262383530316565346334363764653463
+64623737626562666665393831323965343163363631363736613065663262356233663834303436
+66373331656233363166303333666232316530363365333435626461616538366539663564373534
+38616335613233623131643431366365373837633230306166616233613864373733643265343232
+66623536616431613065656530633734333234333864303135616665646534633938376362326637
+35613865373239373933316465306531656332653934356139333439313365366661623766383365
+36663663343839306334626264306136333832333764383833356133313563333836313539343665
+63383735613361396334353739356635363937343631353334313830333132356331356337326265
+34616537353932336635363731376139353064323236336631373563383764393865353039646462
+61613362663662313462613533393463363335653636636230363964303861346631656435393030
+38353332323336303335326437636166623233613038656339373936346133663031353839633064
+62386533363436636264363134636130323638386331616631306533616365633932643236616365
+33663734326432613436663932646639383665363239366563653831653838613833366565626135
+37383363623864373463366136333432396630303135366165323563346235393861363966323232
+64306236393962393832393330303636366564373961373664343632646362643861613236333135
+37623065373966343330653561333536363237363833353936303336393636353135336130323164
+36376131626433663431656534373134373332333465656265396339643931373064386462393230
+63303930666530633935616633363439373538323865666335323964636362306430323565626431
+61373464613338396638613733356461316561353235343837643630303434363036383934656433
+33623464636332383966636361376661646137613437633936663966643231376264633931336165
+63353032373231353630323463366464333438326630376362613965383637623063663235633134
+31363363313134313462663662653331646363643035623937323737323936656137366436306331
+36616639386663313166393239326539396466313538643038393661636334323431613431396334
+38363236313064393932616137323763666637613636363133636230326339626466366664313963
+36376364636461313362336239396561363436353439353431313063343364363166623164323861
+30636361323235373564386662356637666136386630633866613035656537353362643332656333
+62663863366437386266623663313438323462393734306463663737356531663435393862373434
+32663430353031653161336165663566343966383139343565333161316131333139366136633436
+36656332346663303738373766313664643538333261306533363538373330323137616439666636
+34333161306435343833643934663237363933313363323335306332333534646637636139343839
+30663863633562633538336234643034666262653930373930376131316430636131636534613034
+62366239653136616238396136636135326164666366653865346264386338313766653830656331
+35376335613062363231323663636434323031653464666263323230633266623631653836303661
+30343365356238666163393834333037326336343138643037653665613134343330383238626632
+61356663376565396432316636383261626161356636346666393738333539303063383536386539
+35663936306337313737616430363733393537333031333836613833313230356631636334303336
+65316334303732336462373366656330346638303631356366666638393532323835326238323030
+37333335353864383733633065313532636665323336393762323739646662373665396536636633
+39633837656461363362356130383365326261363865663130623730343739656639343638353039
+39646630383736653964326538333939313532383265346566643461386434326433343939633334
+61383563633265376164326338303464313336643137326335656532653135323562393337333032
+66633061623866663265343631383461363334323430353637626234613363313039653563323337
+65636362633961616161366532313234393235613333343863396632363165356337643633393936
+37363637393539376335303864663965663363613230316563303761353339346661333836313263
+66653233633631323332633763393539303334393462663936316461623238326666393837363233
+36303463313863646166336331303864623832613562366334366431353766636636663032316266
+63653731386638363433663236363337663732306237666332303966623839303134376466326139
+63323632613061613034373962656432323635643964663263323536396639346631656630613735
+63643531613139633034376235646137353335303533323763666636313261643761656336343766
+39666530313435396137623730303631333062336666393736666637303063633565323730343935
+39323766376539383865333533323566366537356533386166336637643639646236336237383334
+35323230306334366363656430346436316264373236363166343038356163373237313537636266
+37383466616365393261633034633539616638306236333066643130336535393163633538383032
+62353632333236313333393834656139313361663537643233643962623531656137396133646438
+61323763633136613035626537386433376566333537613564333132303231613865633863353430
+31353536353035303664383035356332396232663539343938613462366537306638626565666337
+35633733323866366234633536643064393832366532306536336462306538623361356635366332
+36623266343063346333653566626161346537313764383464346164336438393234653134653830
+39653566643434393263653631386231356437313866613961626133326232313932356161643033
+61306536326538343461393037346334666431306535383666333636343764363965656431633732
+63326435376161613866343262343562343865303238383032333364626434616539363330326237
+62316238316238376436343363333738316563353165343563636230316430626538636235393863
+30303838346166333932363161616433363133636538636361663338323539383561663363303430
+62613833663465366333396162346131643365326362343839633465366432636637333033633164
+63396362316534396136653737316461643834326464376433373138316532653336333435323832
+65383261313336393934366664353865613763636264613437363630326166313630613638356235
+36396666383365326239643834396538666464623033333062633531393434303932613363373961
+35346632383036626236346661303438663939373539343766353363356239366432643633306165
+32613763396332633164343937383266376331366362653431303631396438366136383136336535
+34313063373862616562623966373436306334326130623962326264323237393263356233626137
+65393230373535653138363364363334363434633131616666336238336233333530643434356239
+30353063633831633936666630356430663063356565383035363131643863316536663731396234
+62613664303265663866356463333164663438373834643637646135666465393665636562356663
+30613635646466343831616135393039363338633737633937663130666134316364383335666564
+61666263383763636134383338666636333836343538643430626436666334353736346237626163
+62326638636338353339666530303565363765636332636538383362653064343662643063643130
+31646430346461373033313737303633323130333562303935306434643435346234333339363462
+35336630653765393939356235336362643736383830316633383238373964373164663763623465
+65613362643638643530623565646233313430306239333032663032383362643161333836656262
+66656339643863373533353630393061363036343334663033653765633837623632643530633032
+61353535343164613961653164663834663333623938613938343665303634313466306262386265
+32356430373739623934306362303161323632303663393864643033373930393661316535343632
+38663366396333353066643235626631636632393965616361616566393230303261383766613961
+32323561313932643730663531343835393634366164326562613437393335343833376238316230
+34343362646131646162333431396431363537656166356437373032353161363463636430643366
+39386264643035313365623763386333346435333963643337616463356532336265356236643537
+30333232613039396435663033313061386632643934623633316633646634363632613765653435
+32376534663263393533666166373338303662646438653762383730393735363838366461643836
+38373535373131356238666663376231633964646361383661306239653330356363316539386539
+34643935356239623561303062326466346662346466383638636234373464643432306535653566
+38646538656234663438373431323339613035356131333035633637363362393634396539373139
+30323930663063306461666233386532386138396339623234373839373732373238613833346137
+64636564316263656133363165656432666634663963316532373265393132316533383932656238
+30643136323363336263633164316633346330353030303437633633313066383239336265303165
+64313066663139653434323934306536656435373662336562623362636331313535653166353262
+38393166343833663834643665313566306438653633366130333534303130623435353335326636
+39373861313337616634353934326232306535333832646364353438376261396365626639613261
+36363438636632643539656663353762333232313863343762393633363538613135343339313532
+35326531393232383730656231363939393431653165373035653630643465366266306166613461
+30623437363264376531313035633233303562323436643564363963376464303537633139333164
+66653631643761633033646162313534633436313834336461366232666532653232333831623262
+30373735636339333963636136633231663232353034336336626239343732373039623961356339
+37313166363262613166363737306262326130636265646135666664353032373263376235323937
+36353431636463613532323865333765376639323332396265383930616633643133316636393739
+35633864633732623832303236623764323837633230313232313463363734393065656137666536
+64303531656638616136346330336230356630306337353038623135643664393865626262363530
+64326638373334643965306465643031626632336464393461366166323132323838333664356435
+63666362303139636338323737333165343237303031373262666330323736393364613539336137
+33366539633238323836376363393562386462666365353930356463336137333162353834643731
+33303330303834653662613638363933353635323032366561656234636335316662353865396638
+32363264663430313537326532623565326665373036656231333061313037393466643665623232
+63313830343137303765613534666262373334613863346535356130373063363563396164626262
+66613537386535636666613733393133333234376532643065656232326631393062356436646536
+30333539343863653365633864636635393138333539663532303061326431366133346264313864
+35373931333332643361326239316234393435643166353262323139326366313332383163386563
+64613635363336356534306335316265646465393362633365303962363038356234653532353561
+33366266653566356164316262336439356334613065303637353266316637353638303831363433
+30333862343361656565643336386565333064646434323235613864333835326162666534366132
+33313264653631323830666135666566343561383963373730616361326161623537353836383363
+66306534656662363762653661343263643061373666376266396265636463366363356335303566
+32323063303036383436383339636338613834636565373964353661336137623966356664333963
+33316235393462393166663430313737623763383738306338636535666661623535666563626434
+35383232663363376234383761643335373933343934626435363162386537393232636566633634
+64363161663161363963373738646664636464623333333434653863626131386631373661363637
+33613434353630356639373034316430303265636463336461376130613536626466643065366664
+64383936623835656538396635306432613036376333626164373438366164373236303865343862
+38303439376262363864616563363431613636383431663337653365363831326234633461373163
+64336132356331323037336534653635313131336232326537323439626564613963653331333231
+64386162326634366139373733616265326138386532353437636465353862366337666533636437
+64336161616639653131313836626633383031633434366135646636303966633437666464363838
+35393132313665663866366231656532303633346531623263346238316135656134353537613837
+39613831303739363931666230353661643433616362373365623336333835356538343631306330
+39333739356662376337346137313363613031313335323833646665663637303635386432336139
+34303632343630616361376335366436656262363532383631663839306437316539303738623733
+38643131663835663031393561376263376237646233336339306631383336323066316639356463
+61353661316461623534326439653938346231386363386136376364306432613965623063383965
+39633034386564373863346366636463333064333530326136373737633761663132663530666665
+31636439656132613061343331653137356366623232306462386363643035343965636634373635
+63353165343430373732353233616339343164613131383636626432383734393466653533373439
+38313432336261663432623134333161323132313731663936613238386638633134363166653330
+66643064333235393761343837613564363566326135393533643861353366393030363764393932
+64363334313564666434613139303339366265376136386163623964376431326563633332373030
+32626637366632626335643663326337636262343961373461313033633338653736643131323437
+61336663616535666131656435663039366562653563646635363765616661373061653138376230
+31313230353565323461336362656330373066316165313161366536636561666566333130646438
+32656136623966356339636131383666376233666138643362656263376563626662653037353537
+38316564623330353065643133333736386666303462323131653962326436626634396236616531
+36343830633062656333373963336631633965663966353634636661653835303338613833343365
+62373239393636386339643863666339373230653532346633353265396237653836633630613936
+37386662343534383066643430653064346533356132363937636334333931333565343664363563
+30653762306539613036623661656663616631353137386430393962343666646238313063313234
+64353636653063373430366364303331656335626239363262623565636662663562613338333839
+37306337316565343334343537623464303032303664393138663832316366656534336137663733
+65663462316438616162356233363932653262386237303363663732366236396538356265313035
+37393762663032646161386435656537336539633634313063616339656633633436623039376666
+38323066356636366262666537656366363264666166303931316637376330336161663461643436
+64396234373635393937396438323164623066646665356666346662383332376164306337303730
+61386332383363363961386462363832353933323135303361643033663632623263393538363334
+33323534633730613130626161666435373833656431663833626431336239373834653435656535
+66306164653465333163323663623137626531626661353262376433346334633432666333653839
+31346463316161663362326630383331346432623637666636383136386639626336633335326230
+30336532313366636263383930343162353036626230656561396362366163613361363363393733
+30373931636261373436363839366532373334653465626534616339663562316663383864323863
+33656661326636336334396635383839313430353535343366333339343864346234653336393230
+35653062316231313639343165393134303531353638663833613832393832376230383163386636
+38663231626239313064396438363230376264313932626134643730396338316132633766303661
+32306631656339353035383164653836633832393335633930633431383739613634333038643132
+63383163303336663737653630386462653335316364623066303264343862623837623066653239
+62363361653837356365346166643833623666386234636334623139623432386430633537646130
+32333566393139666538613662663764346265633035616561346361663632643137306430363863
+66383731336630653534333038313536653938316166373364313432613163323462343338356563
+64663331386438396131653939366336363661353232656131623565346132373639376231383563
+32316234396263306166663030663130636139656232623866303638326530333663373830363661
+35333132616135383535613734323230363666653935383134383464663838393732303235313536
+62373762633737353835633163616162653163313866373435666633353036393131623232633563
+30613632396330633361333865636261663435323966373332663839336466323662333662373433
+65393630666637613932633466613339353139623937636533623465326535313232623161306361
+34633361623631626632613135643664326662653163303066323437346263313836336136643533
+31653737373864313864633832343363313566343430613865353461386164383735636138623935
+63623736373234313764323235393365393331373430616231323837663039383237373531343462
+33316166346563363432613131363532343864633565393433633239396363326130633761313363
+32363936633137356333636661366330383538373565366666663463616366303736326239303731
+39643132623662303930316331663731333061343965663634393466343639356665326261643363
+33383837633639383265666338336630353366346633343261346464653039623562646363623932
+63336530613533313237333333656464333663353536633365393862666230323261636133393931
+36653333313635616132333038613262333433653966643565623738623134626636646336336137
+61323361316566303164653432306261323637626165383932396464663133633963643838326261
+32393363633861346637663731623137356166386637323866643231343931363436643137643263
+37643137663332396239356661636231376663393733303165323666303763636136633663623036
+65653832643265633137353539386137333964333334373731373533306235393263356137653266
+61333836373535616566653265633331643830383035383633656236333662303034376562343039
+61303434383337333331386436663639363836383239363232623063353539386633343762373661
+30376364313165356333643638643161373761303764653232663135653036316133613763353238
+62336239656364326164356139636462623836326335396161343230336163646132383264393963
+61323432333866386431653164393835616265323032316231386331363732303831663230313466
+65663865366566373031653937346130316561373433643531323132666566646339396465326337
+62643262396139373237303966326235643230353131653330323235383634656465396436666532
+34393631363530616239303063323232366632633233303865626262643664326337366339316137
+65373762633138386430643536326663393332393332306334643734623634656639386539666338
+38633238346430346566353432643833626432396461636534303361316432373135376137643831
+32343934313633383636613337633162323130323164666361393236393632383234346165346634
+61316132303237363862323961643866316436663032663830656634303134623535646133343666
+38306266326261623232616232366365313533333036303932366231363562346337343234323763
+35376234366230383332393239393161343230626231303039383861353562356263666263303836
+30633761373538376234626634643138626232643131316430613735613064643935626339353563
+31396261323535353037663530623661343031626562343730353337643933643138653962383832
+66343032383535336238633139386435313034646630623839616339383033383865313465303132
+36306632303866663134616265643862393866643931313466303031393234666165343438323661
+33616365646365363466343730383538306366353236333336343139313464613433383361666130
+63363734656635336633663036383933363935343338633063373463366230333439303038383063
+66626436313038356665643866396565313232333765393734303934643131353237313161666531
+32386262326437616633383231653137346561646230646162303335313264633836383132616336
+39303964613830646239353564343134616232356438373164643432386161636230653538326562
+31336164653535306462313032323163366463323761323732643233373261363939636437323163
+63623732613339623839396665643133316534326539623564333630343838613362333063303161
+39646230323731303165656566306434643230313338386561646235643964656132326335326639
+31353333383765333739306533616434663234323036643566396537363866326430306330323530
+38626264383536646632353065346531656461316361303064336237643835663231326530376563
+61633034643462396335363866333131343432346538303762343035636433353837326665316465
+61373837386236303166303133336135366234623166633439373561656639646634383230313437
+64363134386466623838383966333831366561646437623437303937313238393937326635366535
+32343064316638393833336230616535396537643233353731376333643364613135363461306666
+61303133343939396334636333643265356538393230383938643664663834326135663632333031
+65386239396137623338303331663063383333656235306336346333663933333131656434343837
+62303762333430656539343939623333343964353864343333393636373061313935396165386137
+33626133373132363533643336383465623037396265613761636164386665356266363733373732
+31326131343666323563333639343962323565633735633031393731633162343262656661623436
+33646131366164613365306237663032306562336330653533663635303433326165313761376234
+38346330613762646561653238383339356635383066353536303438323433646338373365643561
+37646164633430326634393834646137643365323033623235666431376662376562333764383637
+35373166326335366436333533366633313262666366636333303030316339366633306665346261
+31393364626630396132333637343035383234303737653232383561633732396635643831663834
+38346134316532656235623031313162656461623634653535633665613936303562653337636131
+66333465333764663932306365343666363637303861643738626238643337316261653866613937
+61346238346563323134343238316339333962636132366262313165393230666239376663343634
+34313932386438303038353061643836326163386332323832373563616363613261306166333539
+62373531666162393734343963653738383237623935613761623863373438376664663539326334
+33383064333031393739633136333563393965613166353536346436393837666232663837663561
+39356334333763326662396433626631323263353937626130336639316130643339306332373037
+31616562643066653661613837396164656161386134333139643865653363323435613765646666
+63623538613931336530633463663930316230313536363564346234623865323131373735376631
+39663564363963393863646434373239373733356138366431616634663936356533666563306662
+31373232393963303864343132323562376631386265633638616136336461393365356530343332
+32643939363732323739643133653835316138633639303663316566316663643438633463326566
+30343463636663623834393062363038353632323537306439363661663637646137643533343261
+63626164653234373238356234646261663162313561373833383766323539613362393965376434
+37323964343630306365396139333135613234636631653961343035626665363363313232363462
+36343838353237343134393165323633653530323737393235376335363430353163333839346166
+34343934343032323330633032303035396237613831313233363665306462343332653133643135
+31366436306635656331313335303865333634626164303165393532393062303934653333643231
+64373062393964666339663134353962666363623765333639303466346235326333666233373562
+63623630653262343464316465346535373430336334323033386636613339343933613936393731
+33643662376663303535636463353034333563353538326136386233303761656131353532623832
+34343436656665646563336662353030373163396132633761313232303339363763613938306430
+32636164303233353239333738303462643263343332393933346161306538303535636632393037
+35366663386662393635613033666565333037386333343365396562623839643031366164313161
+30383966356131333061356563343266363033323230363536613030353766396636323939323363
+30336532383231623136303238656533303337303161353636346338343363356235313339643963
+65386566616638346131623766653835623563653533376138383564653430386337356131313334
+39353637646136393766343132356338633737626637333732363262663333333132316437326435
+37356364303439376433663137333866366564623262663034643638303837656436343966366664
+62333035343666313935623933353964313464623637623061626437613133656632343163613966
+63666231646361333363303866343965343934633032353365653262323966393232646530303862
+62653234393537636564383834333534613964316137633936313730613161336239636130386366
+61376465633461373862363633326135623164343836303563343638346532363635386361346530
+38313238613862363937346131663836346337373065373362303166663635303266346163353633
+37623837313765373533393364336333396139326266383465393865653761383964643863313933
+34323630623465323164306635386531376338663736303135306261323233613663313864333466
+36613838343061343030373935303463656633356437333230643061303561356162643864666564
+36323330653165393430343262313964366234666463636237653062343330316330363664613634
+34383834313035646232313562633466643838343334396530643438626638303736396634643933
+34666265343965336235623633356432353734613239643661383035616261663436316235633134
+37376536306365346138303534373735633737646463326232623339636165313965623262623563
+35373438383763663030333234633233333736323437353134366437313431653937396632663165
+65643335313333653365343634386662646532646438613435633731356636396535313539623739
+35643866646337313838356161303837326561366664663831356334646131376432356135343865
+65373932373365373361343461363532663863353134333162316466306164656537636466336330
+62363566383931353233613230636237656361306663383239343864666166353930636238363438
+36623065393137393762376232393062346638396333353637323335343834663138336237353638
+64306530613131656536373735356365663333346230663562383437336134616631636432666636
+31376434363430356338623939313162633539386562316539323266303930623361316566373266
+39366637383764663932616230393739663262393634663165623233613530333232383737323932
+63643239323033363337636431323236306330336436306566666565653264383064323637373466
+31663834393034393366326138636239323261336130616433663865303234616366313262383735
+32303664343163386265353532366534316631356636343263633466303362313336626234363861
+64666439356462663761633932626131656134356366316536333366373837316166303530656363
+65356430333835356534643764373335356136313437616163623730383234633631663937323634
+35613766393630363435613935623736653166393836633563633937346334633639656231653938
+33383363663363366232383535636533313463653665346131646266383438653562396234643733
+63313134316637396532353837336639396464376663323330323365356665643034613235366463
+62313134376264326631373965636636386531376133366330623866636565373532383563333730
+61333961656664356432623433616534363061383833353963373035666561376135623565346239
+37326333383738383163306130666661306536393863363938303461386363383766376465303361
+35666432303039343439346631383466346532656436336330346665616661383039306234313065
+36646262323635626539373032626630613765373665623935653434653864323664303334623136
+36376665393463376331383731326365626535613639323432343564363364616565643164616533
+38333436396466313762333432303336666564306431366261363561363834323763303634363032
+34626231326531646134313031343538653736303633366561613962363738386666336235616139
+31646530393463326266376635353833666466343638333135383539383034316466383637623933
+31623430656430626133643438303632306330386266623939333738303837386535636130653862
+64643966383861366363386134646535363734643133306537396531643336326163663961626634
+62313331303064303562393433626565613132353638313038323339316466343762663936323864
+38326366316363643365643664656333633465366662643566643939666466653135386635653036
+65373439613564383731376432656262653830386530346636636562633862633130396431663434
+38353163343366643466353231303866633639646333663034373434316636333065303033313136
+62393832636638396639383036336162376665663064393366643064326637353364366165636333
+37353435666463353865366463613430653733353434366332386666326532643761653538353566
+37326631666434393636323565363766373037316364323365323630333935363265346163303263
+31373130633637663364363832666663616331653130663562316635373466353633326166633063
+39623937383536333832303062346137393861633966613965646661636434326639636335663930
+32653666663135343539356337633333653434363631383162646238663132616564663766623766
+64343862626237663431663333613030373261373630366464626239383030303763653633393239
+36633365653765313232363833303864656633663664303566626530336133356234343563623635
+34396239363332613730613533323330353636333464323965353463663532353330303338663831
+64393439383937363061366335663433313430303632653335356466663263313330373331663431
+33653663333663333531396134343762373230363333343432323236343764613534623337346635
+38333331366137346536396265376639363766366137313064303134623036323561643539646239
+66346136313339313562643133666632356634363534623133306461356430633337353031663664
+37626638623338336435626431633237663132616463373139653635613533626333346537646331
+63393334653366646435353338643439623532396433616662383761653731303533353034616266
+37313439333962343136313039393130306535616363306632663231643935656461383035303431
+61326636666466303363353763303762386236366562333564313130366536666433333830366462
+32333938353161656161633234306331333662303666323435663363326364653262633365623963
+33323666616263313362623933633566363965353564323238396161323234653865343632643563
+37613933616339653436396635363437336633363234313536313066366433346132666331303261
+61363830366663386634613263386261653237356337646232323163656264376330343564663863
+64656666663030356432663638313438323733613931663362316563373636343962613235323136
+35316435643930626562366433313239373764363831376631353763663037643732626238633665
+31306332323863613835316365323862303634373037326461313132633139343666396563303736
+31666365613865646261666462653533383166363432663237373662623766633734313733373532
+35393733633765386639613931663364383035643162333238353863633863636631346532333866
+65366135343065376130663332386664303239653839643131313937666330326163356536313833
+30306230663938323763353763373961343730636330653033346534643561643465623931303937
+63636264383832613161306565356366346233353435343432656464616263333530343434633030
+34303935336533653331383965613331303733366661643537393635636634323663393032366535
+37316432333839313138383734366263613334373665306533303738626265386361393132653963
+61663031376564323938383332656339316433663038303437613738363161376666393266643461
+61376539316137333034386234303631396433663537313333643438623437623337376331376365
+34653964656537363035393561313731356363356462383933333166356633323838343632363964
+34353363386365613865333435333534656165386566636364303630633263623134303439316361
+33356632636331303131363736633636623037306665346163313034393038333165646630393338
+32313530346134343933366439333962623138353066383132396266386662643138323464346566
+38323162353236393739663438333533303334326234303539326266376137323637383033636165
+63346262376331316337653263623739373534333334653135343432656439613038336132393166
+30633839383066633065633230613362666662666434323963396465353435656537333461363435
+32313434343034303532666437653438363337356361346466363939343233346461323164656565
+34303933636331343634343938366632313635613065353862656361373439366231373337313766
+30316664613638333261303038313765616532633364366132343066643263346233393331393136
+63653737633264623766316434653731333366653664663732646264393839336137353062373564
+37306634383163623534633261366436333761303734373933386437343938653463373736646330
+34663638623830313932373936313462323638303033373862396239343739313763336137636137
+38343532313830363331353065656162383234396438663764646334353761643836363533313463
+37356237306165356431393435663966636564366333353239613163643735623339396634616638
+37353564663730623832353531663439356364643832363436316436313237623764333635613835
+66313066366135623937346464653535373837313736623935303431303063343934363133326339
+65353463363231663364396330323766333638656231353130643638346564356439383862336138
+64666134313438336535633466646365623430633439313737643938323439333437383434663864
+62653563653863383437346337343233393062623765666166303838343661346261356630326564
+32373365656134353333343263333331646164623836336432396634373435656430626563656438
+31623635383662626363333964313138623036613737346636363065613639343531633661373563
+37383134326566343731616265663438366338303862633031663163366462636262643162376139
+65343061656464393662613266326462363862386532666164643666656565353137376165353435
+34323636313162393566666336656633336338393361376264313464663536306335376531316339
+36333432356232393661313932346264326365646534303565646134313266373538623838306532
+62313564356536663237353538303265356233363665313765646230336666663438393831336133
+62393063303462646466366239323838653565376437383264666537613930356264366135313234
+33323732326236373931623533656231653832336633626234643333373934383237666463633065
+37633865373830373562363734656532613363343336646431653438633937623662343934656334
+34316330643931656362656666616438396337336231663030656666303362343866333430316433
+31393132363765363738343763353665393166363464306633356131643132646561393565613166
+34326466383635626161393335633937383464653637323439343435303139353139653337393266
+37643539323832383565656162376662353539333536656439616636323136316332326265373264
+31336565623463613337303738633433313565613132646136613863663634363932383339323862
+62666664346330336463623131313539343664393834653565616635323965646237346666633061
+64623762386664346463343461363031653534363035383661663833666330323538303566323536
+62643232663666383364396138666362663365656461333763623962326166393433653464323236
+36633534613331383362653763636138633066323939666636343165636463313163393436303535
+33346136373765303762623833363034353735626330363536653737303437646536376162613037
+64386235306532313734636635656534623737393362306635613330663763316332643039666534
+37636535303063373333386136393666343939663763353130356137306664356532383430366134
+36353631373065366463336336303764636537353332386664373663366531626332313937343764
+61636666653364353435356564616264656462316233303961636133306662366535313165346132
+38653631626339336637306137663830333834623264663461353933363331393763346535393239
+38633261666232313162656462333763663739646462323566663131343663616365353664653537
+34653731346262333965383265633162663431343136333961623935386235396230343863636231
+64336161383739613537373538393165633732356633336536306634303731626330663234613031
+65383466393536633866306333313836383532346634326236656530636362373833353865656131
+62653738643064323432333538396264653863386236666666343239653838343632623032363336
+37613833366437613733303035336562356663626362316537343930316535313366333138386130
+64393836373363396136363763373032376562636638333666383833623234346135333934383730
+34383430383831366266333866303938316130656237623536323461386137656463366161383532
+61613935306262393633623338633731356432396165356133353731663763643134316339636538
+37663037666535323137626535623265626433643865626435656262313036656163343763623462
+37363033313063646234303936616331376336373963626161363761613562656231653334383466
+61396634336137353965376335663063333566383132663561363030626439326134376665343863
+32636364396538336634633236363662323239353361613433663364653638303237396163363064
+39666331663264373064663333346562336333376232653461666266663936643834313466386239
+61393335343331613961326332353434366265616562633236366337643661633364306666333339
+62383637623737326335613633366335646635656532656432306332343634623235373562666637
+62646565383761333761323431623630386139313834393035333363666638626636333232653964
+61623362623531336364633365316437336331333536643431346138386638353565393731313464
+39353232633233323537343163373638646435636266373635383333613239646436343334303135
+38396435356638393861666134366161386466616331613763656361633033303930313730313937
+38633036393365333234376264363761313836376163336439363737616335303436396664326239
+30383264663663623731373031656339613364343036383862633434366634636638653637626632
+34306261616364343663356466656338393835663430313737653332313366396136393236356533
+31633637326664333266363966343763386638366264323361396230643030636131313437323561
+35366139353935373134643930386135363238353733623836353664656264363735326530613334
+63363861616365323934623034376663326135323432353535636462326234663563383265386239
+30323866313365366137333032363732613132383632316132653634656363653635306465636234
+30613231653565363566626536343732656435383466616137313335643863623466366565313766
+38373338333038626438343261343031616131613165323231613832366633326535346239383134
+66363936346333646435316562623430663533356539643031306361323335376237356536663263
+36633237626332396531346636623834303636626232333430396266343031613838356138643333
+61643662373831323134303932353066363938623138333864666530656235636161373537323765
+37343364393038383362393333396665656562363737396337396635373562303634323536623336
+32326261636266383936336263613261613634653264653931303236613434313237356231333333
+37663439626432333831366538306434623266653262363837333639636661323862313966636538
+65343133383130316639633336623138363131613436303863383566366338373638663033333935
+35653864363563346235376364656434393532396535396365383632616539393932336261376532
+66613638663664646531346535383635393938663465623432353062326336663034653661396165
+30386161333765356135643961323938666362306464386633326366666666326430373833633330
+65303061616665613761636231633633623030633035343533383036613139636165353562373833
+38393637343235626565313534613965636630623366626332366464343464343131396638653561
+63613635363663306361663531353131623330666665346536373033656532643764383966326466
+32623731386333303461303031643864353537336336333135653531323662643966653362323366
+33623561616130623461363334666638393738353963656132306465636436336236323662653931
+39646533626666363062653739326632376638663635633764343536303966643166396263653565
+39333564636665616263623862633136353331643036656539326466636130383431356162613563
+35323764343935323863613238313363383265653363333666616437633233623462666639656338
+31643461623537653438346562343136616236313838643935646338306633333139346433653336
+31333835316464363532363063373838643464643031316131313739363837376566373265343464
+30633630346135303835333338383637643262396333663539636138626638316333643339383965
+35333563333832336165376636623732343662656662396134386532306330636265323065373236
+39616334303361393638303762666237333562303839313032383063623236376139363933306563
+65613738336632383666616461323633313162323363373235656362346564323939366231623035
+34393530626331633338316462663335303766323730376337386232303464613766333162363166
+33623032643538383639336535633962616639356662323535633633646139363139363066643234
+39316663343932633035363638653034363732343039336434323639333138383739323332363332
+30666561386431326465396161663066376438343665376666343134323366666530346132643630
+33303438613534323164393734633338363966633937356634613362353334646332393433643665
+35313035396132636338663636363831623864363062346561303662313266373265363364373831
+37323931323337326132646163666664383433663935633931653065386563303663616134376333
+33613533333236623164386361313938303163393933393336383137383164316239306364316662
+39636430366638636333346164393366653736363238306164386635666162623637313066626565
+65343334356637323438346531333632336334376639626432353235643264343732333137313236
+62393264336638393339333466313932306165633334646239653030333364306430383131346135
+35313135326134366635386236346236356432663164316638323039343334623161336536316138
+64373230653233656234643031373831346132343132346262396662383539363537303932303538
+33626437313063633838376630653163346432316233363633646563376632646230643462643666
+64656135616665353761346332656638396539356461343038363764633561316632633138633263
+65323333656534653334363461333362623538316562303566633438346362663635666430346263
+39373565613766316466363963323934383831613132356365353735346564646239386236663939
+35616533346531656462333534396538613534393362633137653936366339323432363935373862
+35383262376231383664323863653335626337373538326336333637346432613035313064363032
+32353637306637373964353936663833323939326432316334383630636136343035393730346161
+30313532633630376536643166636462373836386636646564643539303161363462636539373162
+39373463326665303862376235336334393037666238353865373563343264653339656537616238
+63333661636435333235306362616263363263363839636430643466316562663464313161363134
+64383634313566353264343839646136646434646230323031363835383962356636346566363465
+65376439353862363365633632386139626262666330353435343536653930353835613563613735
+39336331616466346137396266316335326339336134306161303166376131653739373435396363
+62313665613030633839363262616230376138373938366365646631333537373530313865366536
+36653066303838663333343830356639633932613265303964323237613236343866373764313333
+66373262383038363864656163393465313931373334613938653931353263376130646533316534
+36363235326637636134646465383336383332356566656463656130323030346262316637613566
+37393137306437316564353938613034613038336239343438313333313632376137323066353536
+39653931623237366666353266306463343864306339393532323465383036306436626661376132
+63366434313264373636386463306533306236333561666530646263633336346266346632663863
+65623236623862393035383532383135363464396234616435393732666464653939343461393035
+31616464366433383237386431373839663265616437393338306337326235396333396533323362
+65323539646163393937356137366139616232643866663664656666646230666465386530313438
+37303939336636663232363539303935343337643038303533376262363331633263323763333933
+38373537626362336166363430373761396135623731393334343534393338363038663034376563
+34623430333866323533616132343035343566363362323438316165313136636439653565663036
+38363932643737313030333666663365616166383261653839336331616265363366343464666364
+37393461663430363431623365326164343730316566393663633835323363646231643330363833
+65313961366161383238356538393530393039303331366463373737643235643039393762653339
+36366332613063373866663134373533316234383539353633653561353965356230613233613364
+39373132363933396237653563663836346531633332336533653637356239653230623734626264
+33343433373131636132643634353038653238323234353637663338636632316465623935363961
+66333533633865613835326161663162653338396236366337303762346230653035653035656636
+65313932346661346334376335326334323864663536623263373433323136316363363337346661
+65316639303530613566393463343764613538643530303161616362666232313130313964616335
+39623733646463396233393861666339383133656436303439616662386138396436383133383234
+66383131373932623138643863353434376433626662356466326132343538636535333462313236
+61373265656662633836653336626631636366383833626539343437656539323431623263613038
+36396565383335303431616238353535663763303537343538316437313364316132616335643161
+30313862326563313761313465393666393965353633303436643830343436373261303136353063
+34323737356564656135653630353333666133386361353063653639666337366534663837313430
+62363335323563383437383962383462363866383963666163386465646262616463643836303163
+32316163616637333935666333623062636430353835626534343234383133393232333538303061
+31613765363139663261656434626335653536646561336265306433616463613438333730333135
+38343733383561396138333634633233373566396363653138373537323530633733643031636634
+65303362333830363330336532613064653761343731353634333237336138653564353764363734
+34373032333934653932393239393133363631393033393632616665303132343262613364656636
+33353137643437656337376137323531643035653439333531303635663935663566396337376432
+65633266343461316631623336326538643539333530333762666534383464346131383864326632
+33323134326537366133616133373534626234326262643263393839663230393631633266373239
+35313338353037326466343964363136383264326630653939626339613163623766663833636232
+63346164363336393761306633393363323133373634393838303332313933326663646131303438
+32626237663530323565303737363464656363636366383132343961633861343766356233646133
+62626638616236646662333462373362623138393338373732623431363261656565383632313031
+62356463336636656533343638346234653830363536323132303239343634643934313132393933
+36656639636131306533303634386662336565636237626662613962363230323830323139393637
+61393133636137613030653839656431343633626439643739356664343237643062613035613764
+66393934643462336234366663353031666633396262333961666464636130313763663562353432
+63303038623966613664336234363338366361626163316463306661313939393636303532663733
+35633461646465646339623437376563333630633537353134396535323163303931633936363530
+31333564646364323337623461306533613961663233376233336430653063306262623937333637
+39383230383335303861623866386262383632316434663038353735646661326338346162366439
+64626133336530613430633332326535323636386431666530336361656631366562313964393862
+65653231303564383434656266386562303734623765303661393538613030653739656339386339
+30653138373235616632623632613262373232643033636139613861623837303933623130376262
+37303765353435303937613632363862633164343739353064313131656235636361306634646363
+65623566333535323830303635313233313733636239633936343034393066346239636538663165
+34303932653830633161633463363636346337303565343330313038376336383062336231626566
+32636662333661653163383565393962316535376564356566623335636665396631353238663562
+31346430313363393934383163336466643434343538666437333138613462336532373132306531
+39303539613639393134663134613162356461396631306130613936383465656133343563316639
+38343262373132623238393539616262656662393331373637626535316138613238643464336565
+30376161333563333464346234353435396433623137643266353265666165323961376562336234
+36333465313265613039643833306366653531326635373666363830643866323737623166366533
+66343931626632303134343438636264363138313033353735323838616466323965653935366434
+62666462616163373638303163343865363562303963323036363761386632363630373366386337
+65373835393133343963333364356231313737656438326333636131626362326532323962346434
+37643832623435626663333733363837376436326162663232353730386535613231386536653262
+65326336346365653664666462336565363365333061366336666664306437386435346236303235
+34336661373364393264613831303339356262633266353038646536643565393364623232323062
+63616438363038666265616631623336383061643234616139393862653265373562303361636464
+34373131626365393835313233346239323735343361306163653336393231366339306666656232
+33653961646439623935386664336565663830613835316663353839636239363037306236306263
+65663236373637653137336264323964303833356136303165303538343731346336626339373737
+32393263653462306339396533386133336364626332363230323131616136313633396239653064
+64373462366661313165633930353237306564613964633339343933386339366437633163643462
+34353661623336366466356331653735363634623034613734353164623832643862373739343463
+61333964366437376634666264653734313466356464616132346531373234396364346138666637
+37623031616637306363656263346461393063633636353439643139346536396539633632313632
+38616664336537393564363731643961326565616230306130376538396562353262356133613461
+62383764626537386134306135333036383435646636663761643738333038363733393133343837
+61313330653631313562386430343830353734663066663039363634306130653633396563646435
+62326331326232623139663733646330633063656264313336346565363562326361393061626136
+64623565373664356365393735316438643831313438646630393363313963616339623134313630
+64396562333438336238653839663639646132363538666261613833633431366335396438636663
+35613639363461333663363434303162346663303433616438383634323132643531376438633063
+37616462653735643937353434643766336665363433663566353964323063316466646566366638
+31646532333266323732636364306637343261343364366639386638666266333038633933336338
+65343866396262366537386236323136313830356231646166623264643265653533343037623832
+33663239323233653265346663353334303132333430643338323634373738316535643863306330
+65613538623065636533636339333231306436623034373935323539663032666164313431623934
+31626465366135363634313131383534636562323631343534323539396238653230653766383332
+32366362643935393435353734653563306130366438656339303564653466653931633037346630
+62303165366131353466326335363365323338336138633961626633323562333931373938303966
+61376566363735343233336263616231393230653336613336336161373236623465633765356661
+65333730326531323661356233656230666662326362343732373734353835326530323466616661
+65313566346261303037633461383939356335616538656366326366373464353936316166656432
+61653031613136303930633663333730366130623862353236376165396662646532346562646435
+35643031343864306634376666313665653265656330366565376539313566363335643664336364
+32666231666263633334376363313937353466396137333732663131653133626232656435326133
+65663635616337626661303665303364353636656466336536343931383461366630303862666434
+32356631663362643734373434373032613562613864376439383939613635306531316531323763
+65386562613736626636386637663537393936316162663533343237363338623737313130383263
+31333632383363616631623131636239616265663365633263376561626462393463346132663562
+37323361303364653535323634653539653739626332646130663761643262353231633736613835
+66313639653663333436353766623639613065613236303030346531636265323238626532393761
+31663466303535346465643964313030363761663163353030366337643135626339363362343537
+66613332343631353864663561363332326339666662656164303638373364643137306231333732
+62663037646265653364643633613438626438396232646638363835323037653364623463313733
+61613439313630663038373062633838303466663264303431623631636433303966633737336234
+39363233666536376435656162383361643862303366653031303263396233653833636139353566
+32333561626138386430316538376337353434323735383765353562663132633035333364383764
+31326531393564373539323163303534636566323761383436633836306638653130653635303334
+37333064386533373964366665353133353664343535663239653862336132343664333966356331
+66323036306531653766353262613435303139356662376464366432313036616664393965383663
+63643834656432303434633134643431616366653834613931383134623461646439613839643337
+31643632353862636666303930383431313463653435336336663334616438316330666165633262
+35323466313661386635653930333533343365633631633061323865336138366532666232633662
+64373264396333316333623633646338353465313832323664633032333639306165616637636166
+38396161653062633164636635303366333736333532303765326132633037366635663337353232
+35343963303736646263623437326438613765636263376464663231336430386137616534656163
+62663166396330336465663238646564313961306165323030613035316431333931373165366136
+36636337623730653064663263643839613339636163623439316464376631356532613262623032
+64656237396130323263656436663236336636373931653763383565326638373433396263333131
+31363565323030326134633661343639326564333539306462333965653334306233393065366235
+37343835343463353631343566643863313430613133353565333662623566316136343534366634
+38646166626439663661373931623830363335323165383236396362366133396134303034343133
+37373562363534336333356266326663633235363930343664643463666261613433333530313361
+32366664336232336133383364643632313562623635623332356536616239393862333430353136
+39656132306366636635366434363936366331623833333930396636393863613661303535663132
+35633734386666373639343936303961623064313534383539356661373461326330393933333134
+63656138336534383663393561383464303937336435333431343036323236633266393338613564
+32393066666462646334616533306432336536373965336537363139616439306363366534333531
+37633735376162333934333666316634353536643463336661336635633637326538353930323539
+65613933643532373332616235323633633336363730323138356237623239306361333630323435
+37333735663634353963323638653131613161623437326630636139653132666131646438373033
+64353435323762663636316666656430303939643837353864653866363830663935623937373165
+66363661386162393366343734343361633539313936316162353765623638643765306230666238
+37306534613235353034343336353362303232333032353735656662336333353238353662396666
+32363235336562383138333464623066386537636164346331373838666334303864613830323834
+35393230633165613132373364656265656564343365316235336630643031633161353332386635
+34363634613264636331323932646163623939343161616666313932663562343230313138393365
+30303234356139363333663464613861376165313862303037353761383166393538316363323239
+31383238653065303965353834353164303135656137373432323030366661643834313737306566
+39326462653839326636633666343437306530623331376233613931633762393030666264626537
+30336231643539646564363533306232643263633435303561346237643932643962613338333331
+65373835313437386336386466326535653337663632343734373936343431393937623764656338
+65623939623666353039643932643132303762313166306137333830643733346638323836653664
+62363034646530373632323830646461326335313833303432383232666631306338326466653734
+37376134366534356132343134313837623232643235356533363433646237316233393261346639
+35663733323261353636316632323535323638386531326535663139303064616436646233633634
+64383833643265326537386530373434363666656362633337646234316638343434363834333236
+34613164323931623031633131643065663932366138373034313439396234373939653834623139
+30373634333430633230303731656666376534356165653635636338333036653564643730613330
+36393663613964616130366164346564653433636439326366353561653534383962626233613034
+65393435346232663335356337313236643637373935323936313238663537666330353032363332
+62333361626463653665313037616537303664303638666230613438666433623761633861663463
+39396139616264333537366330663064343738333236313862633839363638633263663338373161
+39633638313536613839393937653934333632616332373563366463383935383534343662366661
+65663533656462646334623565326537343039356131386136316633363737613931303632303565
+37326137633233306233663064303839646632643035336163303164626634666266333835666431
+65376330356365623662343435313561303335633266316263636136626165666466633339326564
+64613737386162373835333265383336373761643436323063303765376136313561646236326265
+66633362613064313633633863323262616163613363356564393966653763396265346236376530
+35353638306332366533643439623438313266363138636233373964383339663538666636336136
+66363039653331333232633337313130333266633062333864326535643234613331646630323863
+63393261343931366136643633346333346135333965346565373435326231306563306639633262
+61353266323861323031373239633864666539633766646164666562393465353536663962306462
+35656531646464326131353534653964623738333738326135663230393365613733303832616563
+63313666376134326133613230663366653861346437613366646335663033363831643334323862
+31323332323437626663303830626230653336373462626139646639353432336663653364653138
+37303966356166653438333638653665376161393932383765663030303633356661363034646365
+36383637353733366231373465313166613834333038323639303533366137366132376561636534
+62666438373839303432376430616663323534353431366535653061633136623035313265386132
+64646631316162313664663063383236363563333635333435616533646333613437366161316633
+33323437303630356563383433323036383735316239303566326438643230323665363637663236
+30383063366438366533333665626330323461663635636431666664346233366631363065366331
+33656137313634636166303538393739646538376136323437623065633661396364646635366565
+33363538623535326136306638383932396464666432626264393737363830623032386437666563
+39646238633932373634643139373065346631333964616437623566323061326538373663643735
+39613065653430393636623332313934386132623564383133396635313332646634633634383739
+38626661383265386236323463623735663633326162383864343564666565313661303161336539
+30366362633636313963316563363635623138306665626461643764643038366261313263616363
+33313436656466646565643438356539643737376564623034383065306232313935383366386634
+65643965326166656161326134373830346538363138393930663264396239613662376666323331
+64623564376238333438303930376366343039643337646164643630623335393661383233316539
+30353863306132323230646632653235616561323864353836616230633037623361633934393338
+35363430306237306664336665323762316435333537306364666633643639646361356565613637
+61386330316439343837303636626266666637623866626361633461303263303337633634396438
+66663837333130396364363837656263343165383261336131323035633661336237373638383833
+35333839373639653034663065663666363236353165643330386137306161323931303136363962
+37626465373361386232326238333163356130363334323839393334326264336538356638633831
+30646662636563353332363230396666666338633265363466373930643663383962343332326331
+65313933623038306565633531346264633334643132633063313763633739373735343737653431
+66626432666535316434333866653766313466343663633166373633643133366262616164316136
+34323437626139613533326265646234383765323632623962326163316636343939346432613233
+38383738666163363063653030363238616437313863653963333561633434646437393237323836
+63656337303665663532393065663539326163353931666431623230343565393065633836306333
+32633662303335336466623061653237306537343536333132346535376365666563396466376362
+64636261656362306538356135313362393461633134663865656230383662623763646265353831
+35633830336531373237336139646265626533666436636638386337383064313562633961663030
+38336538373164623735643235646634396238386132653538333630373965633231663536613736
+65333532646630643236383236643538636462636336663831656130626166346638336563643231
+64393033393836346564616464346637303834363133646633333436323930643265353439623361
+39663961636539306533643662613866633463363731616137333861333136383864653932653262
+38393134343633343338383135333138363039663832363466646535653637323830643763653737
+38653433646638623266626633366265393232313730623037633262643864333137323930313865
+63396130376466396265333639346436636436613763356363393438666166363230356366343631
+36333235346433366430666362303062663863303034366265393534306239613133653939616566
+63316362663630346633366162306334653163653662366134363932643864333961626465383534
+62333866646465663038633739343063306638616231656561303332363466323031626535376366
+66373332313062313438613263333666626530383239313763333364633430306636323134633261
+65326333363139343963356133353835633564333636656131313530666530616534356532393931
+32376130376634313461343530636333373233646336643332366436663366633966646336623933
+36346162386534613834383438386164373732663761363965633336383364626561386431666231
+33346163313935616438363836616439386436643833303330326266363431636631366566343865
+62313763626637333264353030346435636333313238636261343336626364363336353637366565
+33666438366333306437323038306638646138333364333466656439396232646666656436393131
+63383962323763353766643535656231623961666231393162616133613365326264666136646463
+66636332383139663236393037613332326263383338323666636633353133303832666434323962
+64613336656366626337306134363036303838656536653039666530306633373730373430336266
+36383036366162626664303838346335333133623363336464613162303039616538666130383431
+30353739386430623138626536303265376337373239636635373630323537343936396636633039
+31363234333232323164323830653564333233616138326135393036396133663262303337323432
+36323765333836643163393065636632376465353666383066656139373266323433623461653361
+36343338646663643236303830393561303666363836373831646630376436383632376130633234
+31373066623063353630383538326239306137656338333534663864616461396163393930383639
+64396133633661643961663661333830303363326463343037346532653733636465656665663662
+38333738646466643936323461663662346466646636623239343734656132333336373031376630
+34313839306631666636653161613761626130653861623732353333666134343161393131323763
+64613638336262303964343762643966623431663931393261383266373936336639306436306363
+65613431626334343566663635316566636161663331313935313262613864373835633263636131
+30386461343333633163313938643338396462643238376236306634643262646438343066346165
+37376465663061633731636337623035373464363562346135643665346334613539386330666630
+65313333616331313061386461393263366564303234313363323762646634653139646535363738
+38336461616230363866623136313061633532636339336162376335356665636335373265323739
+34613363383863613937323330656230653465326539313838326362653334376238636136373466
+37646338613033303338623431613535343263353838646636363064326434656539653236663363
+62386336666530636165396534383833313634623661353230326131336466386466336334386133
+64313535376535343464613036383234333366336232323362373934346233383333623938306638
+64623163386238336534346566373866613562356537646531386137626162643435386639626135
+66396432313136373930623739383566653734313865313035383561346562633939323839376161
+30636636323865353165353964653862393634303334376565316435326534353065363131336334
+33353135376161643436666662353539663963376531393936646537643662373739343564336533
+65626363346433353133323364376463303164383466376631626433376538393438633962353762
+31633230316138303230643065656366373434663537326433306265666533363438383536363730
+30326361333861653434626365653465633662326439643633353634663165393336656432396239
+61623438343661646263313836626466386564353337386234653837346663326463303463306632
+39393538616562663064626366333334633130613166333032326630373636313737313863316238
+36383230323765373832666138343137336366626231346262373166303663623361396665326266
+62376666633964306533653130303662386531363162653965396238333962646263313162306637
+34303333343834323731346235373962326161643131363362383531633563333563386161313939
+64666562663431333534383838313266303164386539383763333136376431366531383065343238
+61666434396164653136366437366466386230303538383366373336323839353536313962663466
+39646261666363303231353539356536636331343834306339613631653363313839346137646364
+61623663333832633339386661383865643130303833323331386536326634643533653835393932
+36656637313036353261353261356561393462363439366466366331633866666366623237663539
+38333338653061353165656465353339303936303966316131393361346237656163636163633063
+66623835396536313731393262666536336638303533356437353661303061663639636461626531
+32646138363534393035646531386133383632343437656330613162323861666138393434333061
+35326130343061393964643761343561613161333730613437376236326232386432326636663763
+38343732383639346462663331633035656161623266663838643434303064386132386261366539
+33636666396636663336333931626134623232366431303836326564656663623963333761393164
+62306262626163643832323261306535393630376262653465656135333638326462633761383565
+32333031373434373266336465323666376332626437656565363661663835323934626533383163
+39356332616437356239376365326633663731623564376137613165643634313431316536323830
+33383235346233313265346531383531306335393434383632626461303035623537343965396338
+63336464613335316633393962613736613738313037656636636365623333383030343535396565
+32663132336239626434653964306132343364633837306533383035633832373434333862363463
+32363132636266623331383538363239633535316332346539666138306161613038363164346263
+39633766666366656337643738643431346165626566313366313931366634393932616264663939
+63643565646330306430316566393633356166646364323161633735396335643765326532346134
+34343639383933636130343535623761626362383739313335636334326638626332353064313463
+33303533343930633566666333626638646365626637363334633065626631346463326532333035
+66326661323335353365363935633731316638383737343864653731666264303430313066643866
+37363639613266343530656533333464326132616562613961323637626262303961373066363531
+35366635386132636538383933366163623962316632363431353731613030316138303163643363
+35383933313561393436613338356634663532396463656534623636643531656532656230646565
+32643133633539363930383434303338616632653863373035623338353964373838666336306537
+30653531336332343834633932626432663633623766346638643461643337303538323362386661
+32636131376636373239383862633963663939333565396237353234323135633861383864393164
+63623337623334636664336433633564313236363164623638373332656365376530663834633131
+63356166643731633363323232373330396237363462653164373162616434616563623038636436
+61643162636239633239396434623638653130616436303836373939343562313232623565643630
+32346235333165646136616437643139306232343662353830323363656263646462303364353637
+65343639353530376135396535666166306637623536343564343031613763333537666433366134
+63396232346565666631393363333161316537326230376138636130303162313561656437313533
+35306137616631393133633639356637663361306637356537636634623934343039313934386163
+66623734336438373736656332643263666232366433633139333839383936616130313336633235
+66366639643364666634636661643834343366636635396233623665333635303864386238613037
+32383264356565346438666534643632643532633131633164613330656165363331633963646239
+61633166353764323539396637303733323839616334373463353662616634353032346663336262
+62306661373333313737363036613839326537326534316366386333336232626466303763323233
+39333064373433393439393530363262353430333230333237303738623938316634663237383462
+31373065666134633532343932313035656638653162666665333739303137356334616564343838
+62366538643239663231656162666162636438646437356630353561383632393635353439393338
+36636264353966396565643739623538356463353562653931343231646633333963366565376437
+62653833343961613136306631653737336364626566613135613335376265356431653765383661
+63613036656234333630323432356437643539356365626137346563386339303833663338343964
+64636564373437313763616637613166643037653433623530613361363731316461313434623562
+35656636393632656539633237616564633166633338343633656137343435623836383935366334
+61363230376366323839393935643034333263666536386537353333333964663530306161363332
+61313339333761616635316430663063633931663033306133383532333335333466653936663531
+36616539623166333433343537336137376364366339613164316235613533333732346438393161
+31306564346537313937646134656633626461333264326564313665316633346439343263363139
+37333333636332386234386438666330303636636563373836346233383066633761376162376361
+37396338626133623761326331373235393137346331383566303165303939633937663334626461
+39343863616266396365656532636133386537353362653965353162336465343865376561343066
+34643330383263346637376134653836653034616535356539353561313565313262323336363365
+31656536346464306235663835346433343331376634346335323464613962346637623637666136
+33313637363764333232666633666336383839373538663334613762356235326632303663666331
+35356230313837636164626461363036663630623065653839396636313035633062343330623731
+36303831613335373165396365646334643937373635333237323963343233363461393830393933
+38333739633634333135323965396562343132356462343661646633383930623038636537366432
+33633032336163663037303934303038353662353332303430373332653331363630656330626234
+36336233626131313264323266386163636532373531353934656634396432646231366434343435
+36303335323362336231656539623334646532646634663566303130663261333732363134346238
+65623266653837623739323762626562656231366232383130363162623964393132383930336565
+37613330313837613930636665356437313139313630353636373663633466346464656433383062
+62616539363761633263623837623033653863376633323365313564326336666563363065356634
+66366333343339663339313335333434353637333937363461626232623237646231353931363262
+63636634346232633637323031396561653130313333376131333338386162356332313265666431
+62623835343131363537653537646565346366356230336331613766383966393337316138346136
+30623032616161646437353233313433653565333766313334316633303336636336626234346635
+61366238306364633664383539353032303537633461653061333335333935313932393364313562
+31666534653866353431363662393930366164303637383138326538356363363833373535663265
+62373535393431656630323862356133666330303834396131383662386565636538373530653934
+31363931353937333330623932356236376165343232363132303938303562303464333634366562
+63363065343738633337653436613436336536613730633766633238643463396666383039623439
+30613932373661353961376162626338303039306663646536623037323137643435323535343766
+30326538623738386163303534353339333832323962643562373534636464643338616438373265
+66646236333562363537643164333235313563323135313235396538653231653465623834353139
+31663237376330333864373033303338316230353031386438336565663039366161356462393239
+34613866643939663463623235326264396631663763316364663638323230663738646635656133
+37653562383233343636353864383233316632373461626266396331383864633737336339376562
+30323033653633376630613562616261623238636561313530323566393461303561626237613965
+39303464393238646332383835343533373739336464346430626134656639636633636361663262
+34383965326265663338383965656165623037643837623832616263393765333430333537636561
+36646361323534323639666131636631646362336437303566646639663362343237326439663462
+35376263323964333033363938306237353439666137383734396438636438313233333465343336
+62373133616166326635393364323135636266323932343639366137353261396534626366353330
+37316430393262643830303461356134623364356437663531643930636438303938626631383063
+37373331636333666638343464666335333630616365626232656636323033326364326539633162
+65313766343463633033353235353131306332306164353864356666616366303561313137633631
+64393063323835363030303338666332336561346438653034613061616531306230313837326538
+63643935373532653761373238613562376663383233393865633539346232633163633161336534
+32306262306561623439633233653762383439336262663063383166616233393661656363313336
+38346430303837316163386536326163346533376332336663306461316433323033366562636430
+31306636613362663662663330373531363737343162663762636230643938353031326430306131
+37353139323262383662636662386365313638316565636335636465653266323564323263623937
+66363638636263363931393933373239326566396330393534633335613739616362656435303930
+37306365636238383634613465316334613138656530636232343832636162333261326362333463
+63333266653236643463346634666238323637323332643536386262363661666132356239663838
+65346165313339633531626530373337623430373636323239336132393138666631303438363237
+36346330306334336539323631626164333462643537303134333833363761663439336430626366
+31633164343838613437356461623432636666666230613235383466333464323764353635663238
+37396631353136366638666464373433316466393165663638656138613265303562653261343464
+37383738333039656535636163663038356237366566613032346230306434323930326438346333
+61316165626636323663313331633964346566633431313737326561306166376561646639393333
+36366232663466376639646663383733363465613662666533613531376535373566646337376364
+39383537613636303434326434633139633163616535363534323836376531633132303261303433
+61363539663761386262366461336232623531396363356466633461373961613732356462363233
+65613531623832366332383934633438623335663265396563386661633230326462343961346662
+39623230636634353036626137303631303037313839363563393330336638313261626164313265
+34616562656237346534616437396334363365316262623866336238323165363733306663306438
+31343532366237326334396137306162343736313362396366383930303736653938333637353461
+39393336366436666134323339626537626535376435616664623430326139386537383137663666
+37663235373835353539333964613034356336393732353931323736353431353232323533626364
+37653563623033666530353530626665613264303066653330356562343364393564336461363438
+31623931323235343331343466633961346261643263663461396332306630623662333163613931
+35356162663038363137356563396139663137616231643531336363313738393834316336636364
+38376664636439396234303435333932663031353461343933313035633436633730636264653233
+32346164663037346437376566623136643864663231623661366664623239343933333765383337
+32653835333738636462383838646531383338386239356332386366383831353338346263336231
+32633662323134306232383266633135386437626235653363303035336462346466346137313966
+62343461373864663761303665636135333038376639303836646632383038663830623337613339
+63343563353366346137303163393234633766383836666264316130326334376162646234353763
+38396565623830336534303335366139313235386463663137336637326566306431316262636536
+33343461636439636636393162303436396638663665616230363131373663366439346463663632
+62393861623262333532633938633166626233346538616531616265323732666533643766666264
+63346339373337336631336164616639626437396133653932396131363864613836363633306531
+37333631313261333031343839636138323330383936303138323738643732383762333035346532
+34363935376462626463313830636462643833653039383365336631363237636434643834386564
+63343937633037643531616439636335393864363066303934383935383761616462373938366434
+32353662643832326366623461323532643134306334313363376431646463343832633665306634
+37333339653962303561326138333461363037626563303166343135646534363663316231643634
+61353839396239623265373133366332346535383538656465386534316432663638336435666237
+39623139663431396664343835393130613237646166303661393837613362303835326635356262
+61663831653566626235626237363831303131663031623532616263313639396437666234333861
+62386439396662303933376265333266613535333731323463646238653139343733616330316230
+32633233636236623465313736646237633537376531613039373230653163313531646538663638
+66346266393933346234326365303437646535396362346662616334313561333635633639343630
+61653836326136316462376366323137663662333263303538306263396231393133376230623065
+36613036323835363430646333323830343339376535353534343563393030356332656238323839
+33356132653964616461666634633734313461303032343935636462333339363833613531303233
+34313933323033393138313363643361633638336565323235653565373862356339653939643765
+32623166343863393064636539356632306331623665393431623661633264383736646666643338
+66646461666633333339653031636361666632303461643738626230653330376663323063643535
+66373737613438333334356136633032653765643634363439616330333765616236646432363464
+63326237623966346430336233633761656432303461393136303665383132663736616437663661
+33373366653931616333653431623935343866613135633165656637366662393238373832636234
+62303865343834313637356464643437323965626335353163373433653130646361663364373339
+62386238313639383239666235363339633164306563323931326165653031326139643538333361
+61626261396436623064613065623163346438393235633665383064396230323062383662646165
+31356566653763343536636535306432313564626161613636376538323437323566323138353230
+35333664343366363531336239363466666164366462363634323566366637343537636265653463
+66666661656161333763386236356535623835326466653334633061663863343262373533663231
+39373064383037393637326433316334343934366266646537356537653437653035333831636365
+61636333396636366639626230636461663634643738303930323632666266636134333166646430
+62643661323636663261346131393132323634353262316562386465366266326637336162363365
+33393330376432356436653730623036353864616662653136663766306331363536643838376239
+62366662353638656233393364313166373962613864336364333437313862356234393364663837
+37316231623331343636663230666135336631313035363330353762646432636465383831376236
+35356439623537333039343163643565386638343166306331316539363138383038633331303135
+39386135313235306134326333336535373437653163393137386238386632373933643830663633
+38613934323534643364396135656535663939313335613466633061663465353230363633356164
+30316165346638663236356331393839303432353366646431333162613232313935333131323439
+33386436316263373330643063646463363963616665353166336661346664323663353662306662
+32633066323839353232623635373763663862646136653739663838633338306462643031356135
+38623839633332313562613037323331313463386330663734366137336333663735343465646633
+37643231663162343235333961663234343962663966306335626435336163323533373338636164
+63366264306439373231343763363765306530656335346437383461386337386263363531623164
+64356133303364346538343866313833326432343261626266326536376562393966356132376130
+37653834653961313033393463383533396538306436376566373635616565626633306231633032
+34353464336437356531643534386135386463653334353266333964626131623761336139366665
+35303861356630303062626438356231326666393639653161353738353735303331316236623361
+31353030616135366532316565363234643061346137383731336632396336326631393833393838
+39333931353137303730633661363164333536643136303465373232376430663162633936346461
+36666635643531616431313566633731356464653161333030363136356131613430666238303736
+32623665646663633737346637323635353936336638356436373863383966303862323162353832
+61613539623831303134363336613664306462326166333539353864366433356432663463363861
+37306233373831393562353534386164323337323137373133313239313034316235393439643537
+63383836333765313936336437333832303564383435313764323732636433303836393139373234
+63336466633731363765333561383537373766613865336334633932653564653263376436616266
+36393863613531646537663537303637646335386265623666393139653234313964373366646437
+34643733343164663366643161363965666662363332353366393362353332316238656630323437
+32383835613162396136376430363035613137616634643736626165326431303136376666346235
+33343337373335376464646366366264343462346664383663353361636439623631303865633734
+30363066333764623838653664616232653737396138373339343462393535343762333438613430
+39323766393363396531656430366261373336613163306561363331633132326331646431376138
+32333139613764356663613531633331313561366632663032373632353838666534653037646638
+64336433303430333933353332373031323332653538363636333365616563656439316530613233
+32646336333037363032336138333839613366633135313039333966343035343035313761613133
+64656231636337313438303431613463383333376638353738393135323734336361353362316163
+63306261636361613133316436346334383937366161363736323330353863386530306361653038
+30656661366631356331616566306261326639306164333431376339346339346564323834353031
+66316661353531633264646166316230316539663664386635363163626335633936623238313239
+33396664313363653866336230356539306235313434383033623231373939636462363433383134
+30393739353532363130623736363864303937343966633264303332656463306335653461613066
+36346636383663643137636637396632313163343233353234386132316465316638313436343564
+33646664363662303234386536653635343737383435393965663836663764303334326336626330
+62383739616433343336666263313731356236366261613465306366393635343735616463316233
+33643062623739393361613439386632383738626333383965393436393062613162306366633939
+34653632386362636436313666376139663363396365303136383633336365303839353365356361
+30356638646165333263623466656464653462303333333435383033313739613934323335383232
+61613664633739663563646365613863363839313132363863383731383330366238313562366535
+34363566323737333662333363643164633435333738653139316638373664323638303538323064
+65323064333934666439393266316333353564623835653537323236653463653535666234643734
+65616237666166396637333833373933393561373965356433666366313437653233393061333330
+33646331303134323039643837383334356165653337623736373532356464633338666235316632
+65663537366163616536333061346531666636613130653334616638623138346639633632383266
+62333864373935343636623636373932376166633161343334373739353231636234333562346562
+63366466396236383830623765373731396130373266343563623131613934346134343732643037
+35373437613962343232346338613938393135386562393966323763626261653164386331343637
+63346430666464653535616266306161623261346463633065643933356532343430356537306337
+36643737646335656663626338636564356236663466626135643436623130396264626166326164
+37346566666430326633666239663466373933393566333161306366316333613432643436386534
+35616465376261383936633533313836383064356531393962343365363531623465313632393537
+65653532613762306663626433303732306636666661623737636137393965383432353865626231
+34303530356339366231376138346365666634343132656536633436346430393239616439656566
+34396136346564616635663435313336653439656637633233363337353836373733356633363039
+34313166636234343832356636636236633430363962336535616663353030663961666361633034
+62366530663233616136356436613561383564316563333134323963666465323838666534616133
+66633461343434316163373436663563373633623933623532356239393563313930626363326139
+34363366373634396539376164386439643937393961643238386262383639393639303662613334
+39323366336363383538616463376336323061376463333761636630613666363830633533636234
+64346335386435383435336337623539383139356465633534363134636239356639343838393532
+66623861616361383539393566613531376562333433666566343261633264346531396465633563
+30343666313763343462656234656461333538646636663538663566343539383938313236613832
+64386461656161376662343537366563363338326332353561373334383137376231623932616461
+61353930323733623739643763623039653863313930613835613131373232333464313035623762
+33353463656332326162356262353837343966653536386538653531613031333839306438623766
+32333134386632653137363931613464346336356466353538323039323835303261393134396632
+30366261393731386631346631623466623039666538653134633363336333313437346238636535
+65323635346562613761333232373230326439386631306364643263653161363830636433373032
+31373132336362336531303039346631643333623634633233306366333531613236376636373835
+33663133353634623733343966393665376662393861333833666162643037613566656363343139
+36363939343237643539373465626665326532356634666362663438663061383761643932396630
+30643665636663356362346533663363373265646436353331663331643264633463613438363661
+32313534323661343935663762623165643663323838333035343239656239356365663761633664
+63376631636261646636316131323338366630643939313565313537643161663538656235383064
+65323865613064323235346464646132393661393462643230376532633139393536326461633234
+34323535663163343133656235386166636230326634366664376266396337363139393031353662
+62316366306334313232626263323462663533313331326661373264623865376239333330356462
+62356336386236643964393634663239643531306166323035376338373264326435653632626536
+30623632393461613732303739613361353436613338663464633233623937663237616534353631
+38356135343466303362356563613663386636313130623164643834346364633935366533363336
+39663938346331363034623934326435313132653061616461396561353439363136386161646666
+34643762616562383463636334346436616364383533336363636438366232356437376237636664
+35646534643030656335623138303830366434663761346136663338346663303964616330386334
+37636137306531386538623463376439376533663436326331376233616336336334323166663435
+34346439643063303331623736363766363637343539333630613965376435363934336237376266
+37396539643966363065363765396565666463353137643433373066346538636464316430343663
+62633033613334313963386330396161313561633965636531316632616161343364363133326431
+37303232373765356530316332633266633463616236373537343430333539353662326631623331
+34323465346466616533643337663332653135393865353836663965353331346631383239303039
+62333432633139343063656661663630353264396635373438303636393332316531653562616135
+63616466323837393930643264313333346339633935333932663639646434343163646565306438
+35306537393036333265326166343638323066653563353432623963393535623563346532333764
+31313865333363303734623830356131366563393962623135373466353431653861323964383831
+30393861666539366531663831376339643062613266663532333033656366323562373866656134
+66346263323333663933363862643132333637643461303361336339313130306233616435646339
+32373364623362366535343532353062613634323937386237666337323163616231373531356333
+39346138316631356332343065653766633461386261623831396566323264386364303232353636
+39323138393766613635353830363436383830303761346662393034626132623032646331643064
+32303364333664356430353365303165656563663535386331323837393436633361663566646563
+61343238326430356466613961646463653163333139396230396562626662353139366266343065
+34363334313466323835306263666264323531353334613464306330353439313963303133626262
+66636566326536613339323433643833353461646365663965353465396265393235303437666332
+35306163623464396234336630323263653361306333336261386233303762336461343631663731
+33353164646232336435396231316332336235343233656436633736663730666536353066646533
+65616237656265333964333965393730396137613936323136656238386231303965393938306431
+65663130666532313637616562653130333532623464353066376161356461346639623238366631
+39623433623435393664316563373330633761383634636336633231633562356334626665313438
+66616261383062366666623265396631656434626431663139333765393663616263393639313332
+32653061313934623835356134323639363566613035646233316338303130613432383732663538
+64383831633033613530363337356535396364353762333062343965346139326262333962313131
+66643739326162356235626535306235316531616434663032666463663066316434386563343930
+65633437386232646136363261306438303434656630333739643938643461326535626565366364
+36356136373965333731383832623263333461613533613163633763323936663061626436353661
+37333437623931306266656664396166343435663366643337323134333935333438663163613662
+32386133633566333463336264663232646432316362333335653436363265393566623030366162
+65643231643238616537303137643433346138316132303830356335323231396663346132376533
+38663265363464306261386234393931336538306663316662346263353532363162353731373232
+61386264363065633065616432653936663736343164663037376164633665393439333464633439
+39656264653764366334346565613461376435643033396638333262656638326639306662643539
+64623063356631323536353262313030303838613334356264633931336630316233653234353735
+63353934613334636665383734353735326635356338373237323639343161373038373563376539
+37386437313061353065386165333461306538306339343636303737643063386132333765343935
+62623334643833313063623766656261616532386232386462616339333536666434643933633562
+34346564386561326234326637343631646531616561353334303634326534653065373862393836
+34356336383465306332633930646432333861353135383331646238616539343334336636316266
+30376134363066373939336665643039616135663966646436303365636632373030326331306563
+33383134323732653563343335306430623865363137643365663363393036306539623563333733
+63386233396466383261376461653038363538303830386363616232323866323362616439313065
+66313862323931616136386234393831633861313262323366636133383266663934643030303836
+35653137343136303464323535663663393936633065646232316134613566336339306336323335
+32396336383633386438316632323262363361393263396435633632356564653363613061396338
+36323464373537663132313534626339623932616433326536633831653531653338356635343866
+62656337383634363735333432353439303535383965626130376363393236303565653234373862
+30343239373934396436386565303837343739353934313830383938306362643962353961666263
+31383331663837393163633339346132663462653736363230303364386234636662613732346664
+62343833663364343232303035643535633866353833643734303036666630323439346439336264
+34316164336431663831613065636132633637323230646338386137663465396530663663633065
+37616438636333333738363131366535633130643937313962363235666131303265616564323065
+39363762336464353163633333333338356136613063323033366564383337366665663164636237
+38343531653962343163623339316132326462306237346435383063366637346164353839393466
+62306131393439333030353930643263666133663361373764343336653666356433326239633138
+64333564396132386266623665316461636139616434373331383433303036653134316565633262
+38313363343130663237323331386166643162636161386531313865656431333033653462623763
+31313937373732356336343261643233653037303530616635373337646166636535663464333966
+32346636363234353265366234323837636438336264393263636133643066616232646164303064
+39613163633934393531366335626634663934653965663430376233396562333033316332343431
+37613336396235353433316433373765633364666432303538356632653333383865656435303430
+35626637373264393165336462643134333661303338363237333938346462373362326663323530
+64393065383861343935646637643965663235653635663863346538613138653365366436393638
+35376532303665613332633836383364636262396339336364386331393962363865303135643235
+32316337633861633531333637613939313965633661326237373236333739373861386165313936
+38343538316366366562386166386634366437613962613965646132643634613833613039636165
+38333939353332336335353961323230376565653737346539303763633764323066303534656461
+38356262633332383937366264646634653439326433326633343937616432323262333730303766
+35363465613035336666376536393261623864613631393032306330643339636633396361616332
+33393239376633303836643231363830366639636437313633643265373665303134336239626531
+64323832376266373465666533313534306565363335363932353739323331316339383936336438
+66393731663737613061356538623236663762383764626664666536623265313463326436383664
+64623661303831323763653937303561343362343232623236356633326630336636323637393932
+39393130396134613366623664396539646361316435303837633635663736353363353239616565
+64666263386366663465323330666162383735323665353330653763333065383039633732623066
+66343037656237376538666535616431663765613862353230386364376161396136633263353562
+38366134643761646233353663623562663061333531666162353138643631303832333362326631
+33386461386339396264653238666364313864353231613438626361366232366232343561643537
+38333764373636366434626133393234383431326432373430646231663935356433333330383931
+30363432336635326364623536613937636632623864626536626461373664643035646635346163
+61303431336439323166316337623462636430646266616134303037633262346361336337633163
+66616632323639653932633066373465643338363838353662396162623833396132333932383762
+34323761623564306562633436373231386536326335646239616537353431366263366263376638
+61373164346439323335326562356634353865323537373663393436633935363663383262633566
+36633938663766343164333637376264323730393736616136303461353131386530613738343366
+30386538356565306161346637613533333261393430313137373637383635636262323363366665
+30396461343234306261646332376465376630663664373339376564666363646462366132613961
+32343233333333323032663931353033303964393361616464346233316163306361626333626336
+66656164613464626165363038323430363330623137363235643338393237376163316137653030
+30343738656162333732376364343666396535333834613537613162663331623063323939393866
+31633730653464343034356663653261383735353463363862316539353331643534346630306462
+38616630333062373239633135363536613137373965646638383561346536653638333534343936
+30353666646363353662313862376538306239396432343830326439313930376234326262303864
+62333163613539653531633837353435323432386132323766323638326161346266383062636665
+65663432653132656131333836303630626436653832303733613564393134316130303335393733
+35636564346636303030613164336238373531386362303639323261323561386261333461613538
+37663765653433303336303563666364623931323234353165363562623733366332356530653865
+38666438353064346565393533613735613463646564386332366262363731393439303039396161
+30323634363638313064343339306437333330653164333161383061666563316234376265643163
+32623937313431656362633264666463343762363262363463393639666266353934663162333033
+63323662376437643766636531626362636137323961363930323838306239313164303061616133
+33623861383066633964656661613163613464313331373531383539383362636238366533376362
+62396134656235616138313832656138646138393131653631663533613339353537373539373464
+35313939393563363365613139383031623635653232316437653632373934626431633136353164
+34646464666131393839626236666131626362346564633634323831353339363165386164623334
+64623530303436333936633336353432613031323162313633333565393862336232653734643966
+35623132613334373465373636623239386434653565366131396339373336376532396662303139
+64363864356362383161383138666531313635316239663132383665316161343832663464613030
+61393035666561333061393533346264363430633765656333646564656238346662643334353935
+32326235643834363636393037343034633633333239343238383966633635663164373364353662
+64636366306432623237343562343261316636616263303961636535326531383065636232653233
+62376666373262333137623534323763396434666333393762366365343730313032623666366330
+31646264333434373232306532373737643961353834306565656165336439353364373535653234
+63356133323732653439303930393637393663393332353762336432343636336632656236616330
+36323664383136653730376363333261353163393932373361623434353533323938333930623766
+66326435643837303163636434623366376332333663313830383364633466653335343038366463
+63613932363931303761633638303363343532356536313939363161636262383062383835333530
+66663538343635393762393763306438633162393161353836633831376433646162633162336637
+33643562626561656131353030613062393738353133363637616330306165623839343338633262
+30613432613237343037323264303365323161653937373136663333303234393762663366363730
+33333063306639646364373066313133343838303832376436343139663333396561633262323636
+63313565356534616434303830373264666333623761626633636162313636666239623935313663
+36326537393930343839386264386335636232306631616264613864333436356663623262333735
+61626137323562363563386238643263633161313932333862633035343730313361303332376339
+64356435616535363062366534626236383334363239393663646663373734666235343762323862
+30363161306566666537366534613064356130353562316163373638326665343063333732346432
+63373563623638613830303633343562373238306566386133316631653934386333613165653636
+33303566663633613738623532313463616633343363333865343363303439396437613465663837
+61363235653732623739346230366239386431656465613362346639376338303633646130383762
+35656132346239356537323365623737393563393036373435663463393661663437666130386234
+36613533353962393466323665646333353838636665663835663761613861643966386461306532
+35636239643235663634346163373330303935653036393861383365663966633039393337653739
+63613138323034323861356337306366326234623737636330613866333065303338323730393031
+63313636643532643831613733346531646337636332363332353761373465346538353433343834
+30343232356136383935623962353931653635336635323266313232333037313435383034656466
+37666163356337623636623064396164656636613630396566383365333833303432656236326132
+32393863373064336136376334303564383930623139343034323463336537326430336462366636
+63346139373463313835643032323365323031326166383561653662326237333037626265383933
+34313435353661303035656461346533656436386635373064383939353735616135346565653766
+33363563663331646565326436303435366431383234633061333061656163636237623233383934
+39323033376631626434616433633535396238656664353761336166363433393435303838356131
+37383535626439336137623762373630343231306565656137643561636633613661656262663036
+63356339393332373135666539616132363632363461306135666335633662343738373938366261
+39616638333133353333643466373331353565383237633030626139326535326339663331643839
+37313639376138643835356637363830353362356337333937383935393064663162316165323539
+34666131666635383236323634663337343138663361663737616532393765346234373931353562
+63316338336130653730376665303534363834393633396166656531383638346465636337343030
+36333665373731313863353163383136336436643338613966373132386638313233306436366162
+38356533393435376532346435633264613865346364663737626465383066363065653732346262
+36653832323938313737393933626433306561653338633837333063343634633439343266633164
+61393262353934663661383435643665386638373636643834303466343662326534316636383734
+37636532353535303730333039613835396130353031653238613632623534383830373632346539
+37616666333130373535613830656664353865343238393161363035306333656339346461396432
+32353439636237346138353733643736353962383162353763336534346564386436616566323637
+34613437373534366164626633333536373633623236636433393632346166306664333936623033
+33633339323066313762323464306233623139613066613231323233353262663139623536626632
+63343761353562363832326435653936396234636435326639353933363562613333383838343831
+62316635643439346461666532323063323538306361383439666363383531663963386532316161
+36666562663665306165363531643830613430653361343462303930333830346634623266346233
+62643736653137386133613338623530303538303232346364626364356330306532303639323239
+31306232626566643935313464633266623633386364343430636332306665613630386338303831
+35616430393831343339313764323631313139613662333234323137646535633739623737616363
+34616234336665646130633833333233326634623737326464613065303562663765303965373762
+31613265363162363435666132353136343839653365646534343262343164343236343963316335
+35656230396639613033383732383636383462313661396236623964633632636564316438393237
+34633339653335656363306436616639353531356239363363373035363930646464373238626531
+64626633313836326534303262323564643236303830306130373933616439656632656230326531
+38373266353835356134633666613866646530306239356334333034626138306436366639383033
+65663865363161396331666135666365306135333364616236343234613037653963613638343062
+65313432613765616336626661653634316230646136356165383132366261613862353065303632
+30333134656636373737323834376537316432663338616231636536643962613866616566366635
+35373662643336393636386566643866333865643762393966626364366335613433353533633634
+61393635646563633833343338396162393535396630343531343630383632646663393732636435
+31353335666564623364653063323637373735626535393134373665323464333331643433383662
+65393633363433313566393539343438653661343237346434353462386663306533393836353064
+30346538313462353061626639333231626565643837643136343633356666343730633065323533
+32656565366332616562633338363832353237376535396136303834306230376563633832356430
+66303732306534633636656234346638393562666633393038383836616237306631633038396330
+62633065346633333365366135373232376163353331396133613038326662303034656331343634
+61353635666437333438613866346364313135643062353532666337616639366335376435393566
+34343639643839376261393864363862626431303030376264383736666565633263626263333135
+38623464383733666236613364636233656536623235303334613535336161666366613532363539
+62646133626436323734356134343766613335613839633738653963663734663261636266626465
+32306332386139663666656138336139343036353030353236333465613539626432353039656539
+64666535613466633830393236633138633834663765366262643538346237613933396162333562
+64616566313233383164383733663730393531626566323732333130313239383462333339323537
+34383962376236393930346631626561343237653637653038376333643436366635346339356366
+36313164643066633631666332353065326538363930306531373463633831386539626333323166
+38343664626536366133343061643933373635376433346439396465663264643865313137656539
+61366265346636346365646635353330306565303038356661373330396331623634353838343765
+61643737366430343564346666643636666265633836343365356637333635353534376266616663
+32653265333332663966653063633233653362656333376136396331396530363931633361636636
+66316534393939316132643363373839333137303133623562303533346638343231663566653635
+31323339316233333066646437313237356336386132653335393562623936383938306530333537
+35616262643435646263353364333030343633333232346639393465323834633834323738323030
+32353464373863643731303264316136316163396331316432346333393831326231656366373231
+61393565653261363730653632323930393963386235336334646630666632373331613963396265
+33343931396335656162356131623062393561336463356161623730396566306130643563326531
+32646661336333663263366236643565333263336562383138393539626134666162336262313531
+66653366356166626365633637383564303337396139343433316334616230326134623233346632
+36613763393831363331393139643431333034386530656236393763636330656230643163653236
+37363233613331623837663566653166326434396237663561303933623035393834653436616330
+31666362336639326562333836636466386638373132663065616665363933633531626661666365
+38623732666637383164393764626562383433636566313164323639393730663737656633363634
+39386235326139643362363561366561626535393535336431616130636136306662656166633562
+33313230623934353732313033373066646232343037653834386631323730356532343531326661
+66643538653136393432313634333937326632363734663763646237323531336663343262633465
+37363935323736663563656437393935303330326530633134613133373239613965636162386637
+65613332333333313634366430623135346432356361333062323835356164306566633163616635
+61343765343966396236356265313332373538353762336234643534636130313233353931623933
+33323237396466646631353162623765343364343533346635656234333132313039356133663537
+39653634666162386161666464646537663865633235643861383436623261656663366165383062
+64393234346162363864363663326364323034333161663364393964343834653661663437366263
+63383236356264316163353931393362653161313163386338643235666433643530313034313337
+35663035393061353166613232303030396231333566646431353366636166616662393037363164
+34343334663832343165336231303535373737383834383265326337363337323665356331626135
+61656631353536346230363933323061383864663739393764396238323139336663646461393866
+30303235663662303761656665353831616236623631633138636234633532623237353261346464
+39386432333435633462656539623939616266313339623735616231316634363465643437643566
+63356530353032313037303939393466663263656230663966636563636338363534666339643138
+30353136633462343434613761613564666232663031623631633761626632303136383331313537
+35616666316434633365313637663265393162303239323865383064363133646130303966626631
+36653838633364393236623964383665343535343532323135656533616239353762316134666564
+35626632363836323730373734613166303062373734396335323439313832323534643030333536
+38316666626237333639316539376265386139353236333230336133623134353837366431343661
+35646636383864653735633439313332363466393237373434313063336131663366653033313636
+64353636373966326534633134613634326565366461333338643239383033343835656334333530
+37386362646464346231626161663038316436376661626434383035643365663531383233373139
+62313739306131313833636561613764373661653931386336323364383363626632643863623964
+65616132376431636638363232353130623934623035656566646231393666306334626137393766
+33356234663939636164613136323733616566646566366232363235306236303262613933393333
+37626632666339366632653865623065356136333533333963626337633135383930396261636236
+33393639373635336166666561633230383838363362613030386561326261653934656163663862
+36316132663861363533393837346337303233343662313939396633353834353338333666666537
+38653834653734316266316530323534303538633864393864656161336533353734363738306235
+64663362616637633765666336623137633331653431356636386562663830646135306662303435
+32393165633465363161373565633565303639643061666435376561343864396162353961373064
+38393530383936313337383265613332336430346330313136666333653638613031333031353737
+39303035383630323939336130653937386566303339333237383930326461656562356437306539
+65303866623039623465616435613438373330396632653665393136303135643030623635323531
+30656265393330336634626662353630663133333939303662373733393765373733616632616461
+61386361613235336132656331386461363666616164366238333037613262616262396663303365
+30353938333539393330626665313737373136383938396338383562346562393836653663306264
+32356334383761306361633330343334306533663963613835663161393439373238373634313630
+36636664313635326161383161353066663238383463323762643832393836633538333537393431
+62643066653837323964303932373736373431316138323265376136613266333233636539656333
+33393633643037653364633033396662643337646662613530393263393661396531313133323934
+65346332363638353037383136616335343638313366346634306431353464623335353031353633
+36363533636362356330653766373139326239346431386262313736393337333939363733313164
+37373965656531623431656633623561623435313364643864306664626661623030393736313938
+39356664623430653335336432646563383564376639643738643965376438623035316135653263
+39323364323363306231326136376430393161643238396537323736323739633438373730316563
+66353334656430653536383734323138303962356539613662313934346530306363656431323531
+39623835366262303837343938366636623939346566346537326566643932343939393130643833
+38666337373935633930366534353663393963323763663530363265653061346638353665333738
+35383630353238663039616638356561366537383961313866393964383134653365616331313033
+64666333366366386430663031326433663539383736363437393331343935613063333265316431
+34353232643731643961396130333535643664343638306361396330323065353138313563363164
+64333366613632373034323661303637366465373962653237663937633730633836333533643537
+37323137626438623131366635623962336436633538376430326131656135386136313939623139
+39633639616132396632316633633163376662623235353739333866666264333862393032613036
+35653839666464333261376662336161353838303463383836366239373066356439306137376239
+39613562323866643834393137623532336433643437303838343539353135623032323036656561
+32653432303764356637636434363830626432316463363066373530306663333733623763376534
+36643964616634353363623565376339356638383363373664343933343034333139303839653033
+34323763396335363336613162353837636138636535383133323931366566393531363261626536
+37613162313230326337323532613537623763343962326265303863633565626663646363316665
+65666265636133643231313730663331356533383761363838623831613763643431303531356532
+37653939313430376432333538383830313535643635636532353633636265303730313834353837
+33616535336135373063633839623638303166646231323033313032663235633930363234613562
+37313331623930393634346233646538336230656137333637326637353961633635383437643135
+37653730633563313130353337356337626265623130616538646333393665653435353636363238
+66316234663731663838383061646132303335326332626564626166313664366239623664363233
+33393361396335383065313430316634636235633536663466343439366133623736326132313538
+66346262643261643431323734623231316164636639643663363539326461356230646433663964
+64653034326562636234613765303463373461323934353539393536316437656136613739616532
+32333735333461323030393233663039623630353032313735333535393635353363643738623231
+36346338393938313630643962616435303164396436343264343135383361616335663035326562
+32306263356634633534306538626636653935663836306432373137303361633461656331663232
+32343266376335646365376530386436373730323433323535323463333865313231376435393163
+64616435643366613635643563663662656433633734333836653433363638616231333536373734
+31396166646264663035383065663362363162356637306361396561393031623934653366366534
+39653138376166346662633065356338656230323465613632643463393338633639653030333637
+63353166383265396635373932366231636138663565363034633566626464343865613430623363
+62313463306138333239303166333633373534653665636561643837613265656438366164343762
+36333236306233613462646365623834633730663237326532366462353031326635333634333735
+64336463306639383537653138373030623135393065363837633137373630613835633334323865
+36653061613961393062333639656164653830656137316237303664643862306235333233366564
+36353939363937313635373962376135666161386630656533653231626163373765666230323734
+35366439623636366338656362313535353431623937376336343036326535643030346163626166
+37323764336465666166663762353865646461303335333137343639643132636361666565663836
+65363335373838333630346633346438373437313833613138363235396563643465633537343032
+64323731363162326636306537613933663530353134643865313335373064303261383434343839
+31303863663662333361336538346130626138613737393534643866656339353666613639663839
+31363463666339376664346564616136366563323930396566653636336262303866633830306166
+32363565363639353233616437386361306433393738653065643833363163373035626130613337
+63306266653836373535663461643065373339643339653737646533316638636230613430643131
+62333539373030646634633235376238393764393036303335323830656130653562393731656231
+32363562666430323937313565396639366662323363323835336663336563386365663864323665
+31333732303632623263366237396135653864666564346266656134636237373730363038323561
+66626161303561306466396666663435623835383130316564653539343964663332613135613565
+61626436666461363631396133616532376561613265656537366565643731383637643139653062
+63313532343231323734633239326138653163373734383238363631376538383437333164636433
+63636431323431656164666631623261656531313034373632636330653833636230333132333963
+31656335326432336162373663663566383830393736366539653064333533353564303239363735
+64363038656464623231613035313363623034343161663764636163636562383639333664636663
+34613135373234623436646630363065343333653631333734333464343138343436653163656433
+30636466643164356135316635303631323432376634396465336435646531343663623065346230
+61663366303331346164613833323736626662653237383935353165613533363663633133353837
+30666136326563366533343263353566643131383938336435363961356163613063336261666231
+61396331343833393131353236326539626130383438636235343761336263333836323863666665
+62346664613838613165613437623563636538336561616630326236656463663261633664396439
+33323736303438333864323933313735626161356130306639623830313163306234313362313764
+61313935316534663235613037343035306138643536336461636164656664626635333865393865
+64303931623661383630333263363436303630346264346537386263663463663932663331356562
+66356237666630376330623235643762383765306361346365633538656261653039633931613436
+38313938616438666334336637373162363233323864656435626465613836393438376232613234
+36326165306364306135396565633233346635666664646163663531306236333438633539636537
+65633434373139346636393830636236353065636263366435356336303436356663613531303462
+32383834363264376566323836646638326264363239613634323839616161376232313563383063
+38346364313837666436393462616331623266343537633839356233393830373536346630376438
+35653230393631336235346163363434386263356261386162323432386234633765336662346235
+30666563363132376262633431333736313038656330333163363036653438653762393936306166
+38323133633466633136636336336233343631333565346533656666666165353033313739346335
+32616134336164643934383864633036393531393438643939396361656565613836613132333134
+35616631366263383736343032383737336639363035373261313836653737636530393236313932
+37393562383531376239313933613461383863373438353864373438366532343365613662393731
+35373161313862303737623135643765306361366462353965336231656561623333633833383162
+33646337663262343636613761646563383937313133353139353437393733616266326439663666
+62303463396134303336343439356465316263666261333265353435313962626630656265646238
+66323837396262313231393130366134623166663966393961343461393865653037343066356537
+66356634306334353234343161633631356161373632303862303533393438613830663462393130
+31626166343066373334393163663961313935386536356637343534653236646538356266393262
+65343361633162633934353064366531396339656535633262653931353235616539336464616366
+34633433613361623436343731653538613433353665383361356336663432663732336435336636
+38333362373333303863633533656364643264343935653964333638383961396338386532663664
+38376232356633333530383636313739353662633062643863333662306432653637343831313330
+37323831656239313139346336366266613264306630353134656130336462306466333036653532
+65313530623462303431323432326262303731646338623432333032376464393336376436626330
+61383361383535363835316663636239363035353661306564393333653035396338396261636261
+30383465316462613462313564656661626236633865353434336338326232643933396633653130
+37646462656261663034353034613863656364373161636135366431323163353838363836633835
+31353962643761373234623434666363643433613135623231636133633635353837383362393235
+65316636656662643537326637396539313438303937326335343730643439393161373733333338
+35663036313932336263373936633331316632303464366638396237353464343239393633393565
+66623232666636313661373264323163643036336463323863643362663338356634363038316236
+36653733306366666432356164643738353662663939633366363838326665663734323562613434
+62646232376666613461366162336364393566373636386430303461333965383331656366303535
+33663239636338613061376661663936616538666366653461313134316366626130663466313133
+64306231663237643637306431613636313534653234373966376662363431643435383363366137
+63313331643132646366313233373565326164373736653738346265353931366330616236343566
+35396533366563366462656563316233623531613561656661346538353137623934393139373636
+38646261323130333261646432363939326466643062363865366662653263363161343937336530
+31333061373837393937666236666164653636343431353261616136626265393766383634643762
+36616566653364653138643031386130613236376134626462326666653736363463636335373734
+66666135623565616237333236613962386465366162663437376434623034666163353762363437
+37623363616330623131346539646335633735663031386637373332323337653664633233646431
+66656434333164303637303434663238636262613130393863333863666661393766356164333861
+31343261333263633130306433343236383836316238303261386165613362633338353037356161
+32326231383931376262353035323635653435353133653761373038396436616137353839656164
+30316534353961633637663063363031633737656662366435343063643962393737333831626164
+35376233666665363935346135366466313766663431626234663032363334336238313165656264
+39303836616633653532636237313761323837326431393330613334616236396237656235343730
+37393965626335303664316263366666346236393839383131393832353036653032373138393561
+66306562663764396263393035636561646338366633333966633135366630633662313663306561
+62373839366163623266373330316362663734643035613061313965363238616136316237316530
+31653134623630653836366332323839636135323037363661636566353264313234623431646464
+36386464666263666338386363333531616638316339613336616438646338323237613436626466
+36663930643763353937646162336365643134623237616334366263386539626633356535393839
+61346138623737316636643932383733363063383030643665343361313834663638623264383432
+36383765656239666561373366353437393561613433326632313534393866646330393664656630
+66393231653338393336353664636538623233616132396165616339393239623430653661383137
+31633066656633666432313433653166323763376635343631346534316337663438636564373738
+63383134613531356539353961343730663963356334306232663362646131626564623330313864
+32643165386231366438633764303363643438643766363062643938393938633839383930616235
+61356136373663663536386538316633363933326230663935343831303634303133323631333661
+39383734346464353836346436396239353066303136653039653964346365376566303038653730
+64313339323666653235336362323163333036356661343238613965303361376634623831653263
+32383137666637356561343361353330373961373630383839306465366530373337386561656236
+64353334636138626265656236363161306566393664646630613863356333663939343932326263
+36313232323765323038616463323061663535376334366430393231343031336165653532663931
+64643233326465623736666161383437666630333231323563663065663332613965623563303031
+32363332666264636430343530383634316465383438663533666439613333613161666436313161
+61633764306262656564653432396330633164623164623735643439643530393936356239363335
+61343835353831323630373833333136393662623766653439653037643462396239633434623364
+66616238363565333738353263613166623431343836333931333430616265393235663036383237
+62396332623131356465656631623866343730306233373737333330623936363938613563316134
+34363638356461646264373832366162653466376339323264313539313234646433653665663831
+30346637383932373739623433353139646637616530393736623165623536353163643064653763
+30393131366431366439336565306263373831376463383035393437636536326565313665353530
+63613936656130643232633162666337623761326339653334623531383634306135663932333438
+64393533366430343331613865636132393032383363363739653365323362366461383334666331
+36323866356136633030353339383166386165323735373039663034313136343233643731313131
+66643437393135346366663938323561633934613036333531666135333463333133333232653466
+34303565326235323435306239326165303338363334393366323935663637373730653537303630
+32376461336539616365333631633436346539663631393934393731366265663465333630316135
+66346532623033353833313539373963346334316639313738636137656134303665313932323165
+30653063616363616364373734646638326363356334383439633861323738313735653463353837
+64656463303333613539313031636438373530633161306561633136383166393731393966666130
+37313965376539326663376633393034336665333132353035633839353930396466393931626564
+63643439326330306531363061636136393738396532316162663664643065376437306432363266
+62333366336134343338303731653839356463646361333366326666373561306664653162376564
+62636164633161613036376532306434303931626533663034633035316162313636323361306537
+37396431386434386639633232303235376361303733633266306362393439323164613363363634
+32653963313434323630386430373031363464346537633864653566626433323732633566646230
+36616262363438353966623134383463616236643063636564303439336335656233333432303062
+65313536643938623965353635636236353564383165383937353466343433623037336134323439
+39353239303532393434373161646136643832313833383532366462346163346430643364303838
+36653238343161326535323636626230343433623666643836363366656133383862613537386266
+34393164366339313439626136353261346562656666613862303736636237333662343730323939
+34363032643162383731303861666234306431323735623239376535323466303363656439633937
+30356163623735636666643335346632336338626236323238343039636366336265653538653764
+62316164356635323236323165386132366366303264616432393338646139623261393734663733
+32643931383132643462326466633030643933346238363938353533643661613665656164396432
+33653337373765626361376330616666653438303864316463633064623161393332376164616333
+64383037616335643339626331633830666331353437306136646366336533373632303831313564
+62326262306666313661613737613432313566623335613035616561383134333961646433333634
+38663834303132313761616236363566323462656535626432653434333465346664396664386262
+35393137306534326362616462643235633838303337616365323832666463653663643366633235
+31636635346331666433313830623734316530633866353335663934393661623637316364346465
+64306534323964656333643265363739333739326330306339623736643433656637373763333963
+37333131333131356664313932346238306465343734323865643233613931666239393938303432
+30393931343834333137353665363936373232373366633536356131313661393561646631663736
+34343836613534326139643536626633623335633933376364323838666136303261323935313161
+30396130643161646533316130356236333232633861383734623236303966656231326538366561
+65613162363363666639653439363834623037386638616565666138383730356339386265346637
+30656461636337633939613634666132626439646666353937353632393736393363303837326633
+64316130313662303961613830346131643363663132653238393965613336306637303465366132
+38306231303965663839306636613936663134633866626666333630386666663039636530313731
+30623963636535346139643761343236323035356566326538386565333633386233363230616263
+63663665373839326264336537653565653330393932333261613538326237396563666139396236
+32646632643366393463666233333363346138346162623135363964623430623664656265393464
+31633839656336363065393931653863663532333666336434656534306365376633623435353232
+30303737653230373663656266343961356362653936303032303939386533396165613938346534
+64376233333133343338383665663365616138666565386536333663316166303037663937396331
+34356263616130623364646165383338666464666333346639313565396563353561346630636534
+34343631336661613063646632386266633837326339376634393132386363313764303335613761
+30343266396639376362303063653138383461643533343439623530356632646662303133303233
+65623634396136323364386263353533353231663631646432373838666565373930623362623232
+39643738343563386235383735643366306362346230333464316637663032363764663630633564
+30343337376464343964613436363538373033646331633730643736326637353033616361303737
+63623066303736323534663461623431663564666133383135623030636230393030643064386532
+61346661303534643662396463363037393932303765666665313434653464663663363366623638
+36383061393036623338643630663038366563386365373933373064316565646438623932653664
+33333330626165623464383732613733336339353062333362306463623961333631616137623133
+30366339656631306238323535653132613032663037383065356362356562663261363663663032
+65326636636239633266336638353332313436633238373130346461306238353863353162396433
+34613530366439663530633566303166613731633734636639616332323931626138323563336362
+63613039333933386166316535376664393637393033366361316237313135663765306462636232
+34393263646639376363393734653636663131623336636530323934353833616465613632336336
+38613530633234653839633635393037346565316533636464343131633132333961386438343964
+31613333373065623965616662666662663239653065353138373236653531393465653339313364
+39366235386263633364663963383863643031643737623961393861303435376566393338656366
+33373231623564393435396533626430326262623563626465633661326332366466643235663230
+65663536386364313535663633363833333039653532633639343863313737306136386663613830
+62616162323561623737373137393833633961333538346630666630646438323662343936616364
+30373465333831343039373366313331333433376633393637313432396634643766383363313066
+35383434643163646537336465373238623365383861313936356537303265363531353636373430
+61373836343334626466343435363264393833616264333937393239343736643733613333663363
+31373631326261393766333031323662633631343361383733396631366164333031643564643236
+37613739343937396338343431313833386238383038393437393733306437613137346666633331
+33366263343435616434636234396261313832363565663837303439366138383161663232653239
+39363030343866623237646638386433303638663864356663343064333865373464363332356136
+39636665303032636662356465316533616336663564653034653439646261653038616333333135
+35306331303536303937366465326331373639383865346130326661376631353264356265643539
+34656564333432306661333339623766613730356332326132633765653365363237363132353437
+61363431623832643165383237353261623861633665336535336262376664366239323138353934
+34666362663861383032353938306232373434396330366532376231636231373532336665383137
+39636362643237396433363465623563303137383164393434636532653961383066663836613731
+35633131333635356661613436396366356164303262376537313964316432323463663765303830
+63366637633933346438656632653239616432333665373763393837303938306563366163396332
+37633632666363306134646363383138326366376337333561373934643332623531623162333234
+33653730653730373539373536333932396666613764373361386334396663323432613130306661
+63363362393133363838626232373331326165386336393438363363663561343437376534376632
+31623734656537613632663362346262336432393730623630623061323666386233636364383934
+64333033616166333065373635386437653866363261666661356538633036656433353639653538
+31353165656334333364393036623662633339303437346131393165313936353366666333393930
+61303431303333663762333537623561343665353034303864346136393738613635636164353961
+36333263316631613564626137613762363339396435313033613236656539616134613031396133
+61373236373637353765333430396537343930306630313763663264323863343035363336313364
+63386465666236343132356435663264656236343864346661313333353735393034323031326463
+32646531663637646462373534323831356631663439303461373534653335336563343662633763
+61373731383463333633626665363536346131353130663831613439613137306162356638393438
+61326563363365646266353739643264636338613163643831393833303065643939343134353235
+31356565373337373130643539313630366239363033643639646638646330343034346637333337
+35323632396235343363653265636562653337303235643134333039363032333335313733333732
+66336331636233643632363664616632323763623634323466643834363966366137396639396236
+61373433353839356431356630363663326131376336613630663161626461343866326430633831
+38646337363032396539656434613036393833636636316163343961333933323665633963333936
+65363165346161653437353932376361303534663166363361636162626438613532383063303435
+30656362336265343439613432393464396363623162386562353062376466663430613464303265
+39646436333562663930656635386431313164353262393564626365643666313763303866333038
+66376162663361383634633431383130373232306566666565613232356665623035336163393765
+35303439343330303732316263313636623831646130353733373834336537393130393631336336
+64366266386336626461663964316466306165366165343338333531643232306562323331623265
+32323433666432613432333136653232333665323862653435343635316335636432326534656332
+63356466393334386131623030303363346661383433396266346437383834643563393038646632
+38396630343035313733373433643363653539663031313436383437323964333232326233303262
+33333563663766393238316632386134643235306330633162316664643231636361363731336361
+32653037373163666436656136343838633536613562396134383334313238623936303564376439
+63623762643766313437323066333239303334336166313630643138313633306461663932353739
+30336364313537653064323739303831303530626266376163336562316638636632313663363832
+30363631303463386366653632353738366266333437306538393133383034343539376432616665
+62393161613537373164633665656263353535646639333631376330626361313133303836613137
+38396231643135383931323830326166336664383233373630356639313363653965626261366630
+31653463633835636266383935393231353031666537346438616238356438316637323066616439
+39396164356630613230643265626335666336643630643937353764653430313237653732643636
+62316634303137323664303761333864366266333839356638343163643033306635356161623763
+39353930333161623635376166663637346139343562643430663465663032346238643436633339
+30613633336464636339343433303336336230373531343961346438633839353632333230383735
+37336639303663623863343339346263316130356565346237373538373232396233353462613934
+37313637666263616165313834343666323466653335366631316563393532653439636430646261
+30376230346536643530393230343435323837326238623566656630383639663463643038336637
+35633433316234316433333130626562623863636563333832653830333733616539313063313464
+35376431333030316231346434343062643730376439306634363666616561383365313565333930
+32383935623263343631303532636534663939643834323965633735313632373463633033646262
+65616365303438303937646262396663643435323964666665363139376638396564643334633963
+33666263303839363135353232383861353232373961623035343961643432366165613664613763
+64313166393638616265663735356563336232393837383161613336383564333034353164613735
+63373661393130396235626534363034646433303862386439323566306366353862303836373661
+66333632346363306438626531326531323036376465633264346237303230306338626361353931
+37363265626438393563356566346333313236633263383332313934633933636339306139303564
+65653234306561313863336261383730363962656133323537316233626366346364646565333265
+34363361333536626263313634363863616634653136313534353661613038376238363433653931
+37303633613132393534373733653936323331313362303230323066303630313763323335666434
+61353563316435636430643637653935323135623766643735343835336636643638653134363466
+36636635333165616233653437373765373136303130373663333563653132356231353934613835
+36333433356163343638346264333665323937386232383366346561316631323936656431636233
+37633233316264303362336461333632313639633034646230626562343832623833616138393864
+66633436376330323538313137653964303966663366663863346532616533393237396137643334
+31326237326462613530386331653330623337646663663931386162666235333631346633323332
+37313334343837336266373061323033363638653466643530373432333061396233653661373362
+35616231626533653737346337373066656138393663343661353066653934653036613430633935
+62316465653134646162663232373330633630663431396566623766613230666364383130303261
+62363431643231653437616334366362336337656436393261643830646139333138376230656330
+31656239346362306362313238313331343933386266633236633230646136393630343262653039
+30326366623436383266663230643363666133323239313839613663656566646265633564656237
+36303631323531653962613465383232626363613635663236326165646366653163313836333330
+35336166313832643539646662306361376163323139323230636139633130353637343365346164
+66303062663065636232613337636136353339656666653561643032626637326530373230666336
+30653034313335626537313531663530366435306662646432333330623534373634346638353833
+34613335303838633361356265383735393034373861363131636338666538343034323063396439
+38373436633438666666313739613436623838613662303935363631376536616639373338656266
+30346338376431353364633434643533316436366333656130653339323465363561656235346639
+36386164633830313838353864653832326334653936386639366266386664343838386566353233
+62623861633532623436383334373832633762666561653365366661643763336462643136376164
+39306634663233383839373238313930323938656466303234316162616466346234353662653131
+62303536373134636165316363303136613539343666363530313632663762303162383730313730
+31366633623538383834366231323132613037353638626430346466393936656336346538623635
+37626133393836313335643861373265326462383233323334613865663330373433373462346663
+37386138666132366336316130393262393266373838313438633633396561383630326135363862
+35353436613763393931393464323863393234653038343132653338353738313635666338626365
+36646139623365646232653736366266366331393438306533613130393563393933643666656330
+62653534616162316462303936363236313537313862613039323239363138393633363334393161
+31633063353439333933353663643162623231613762666232336330646363313833633561363038
+63386531376366373265653764666333633139393435666665346562303538643561346237396533
+38323565343865623238613332376561326132643238643764663330613465366665646333363434
+35343964393234633062653533623030316364313236663530636530393039303564643331356261
+61306636373533333132663632373931363633363138353737373464373765623232353930303465
+36313864363739333666653638323839666466386335383562656663323865336637323439343236
+34633530343664656462343834663434303539396134376635626465633162636137663731383736
+36643563366164323162663766373266633936313933383239353164393138636238363634636631
+63383862656335343638653566303436313365333234303138306263653537386264373334646338
+65373135653164643533336166616362383634316637636363323230366464356662373165353031
+33306661306364386539623037343230363366636262306163376464343766396135633263653339
+63353765356237383763373964626162643530376337623539373734323133336662646262636331
+37663461393963633032313836626563346161613233616466363638313365323231363364323366
+65383430373130313037383332373337393934623265633964393163653333356139393334383739
+63376132303561363465333736376263666164616562313332336565306538326639373332373530
+65383266663439616534323965613337666630646336616139353030356534336638653438336130
+32646630333236393566653533353762363736316437383961376335343430336461656233663362
+33336337326237633563336332643135643463623663653630376633653732376635623462653138
+35333163643365336339633030356362386465346639373766333263663863633561613831343266
+65316531343734646261663733616533626362653731613438383861323432333961386434343163
+62303465636466626431613339613561636237333037356433636261373564333763363963653435
+31343334373130313430343638633430643964373065343134623735633833643162663066613839
+33623730666261363333393164393364653961323239636133663432353635356462616431323139
+62353363656164393663306136386166313930346239323536343639646630313036663739343330
+34623631323530393861343839626431643062623164346431616562663732376139373335303138
+65303932343966643431643764373133393236313538356465353539636133336162343162343062
+63623362303937393962636363626361653964373262313236376539373965613331303536643865
+34623130653837333635333730376536653631303563313763306338616336613539323930333637
+37313534353262363931313034626162303366633836646436363965373635626236323365386535
+32626631303131306661383964363632393532383666306665633462663336626663613065306435
+38393261616363303434646562613730363764633730353661633234323638333439663237613336
+30356131373462303231633165336430653362623937353264363332336637303336373337613964
+65656362643366383465653337323465356333383231313862313734343165393633343165313839
+35336130396663313664636565643631326539643563623935663836636531613733393433353039
+39393465633965613939336363616462316639646330333861623034323733326239313866353061
+34636331313563353630323738333663636539633961633031316463363961336466373763343030
+66383339343165316562336334383930376436323266333030656263316462393161633365623364
+32346631633432626637323335323831303262646539303834353631393831316230386332363734
+31373465356639663132373365663164643961303038326638316132666131656637306630306165
+36653838313732366131666639653863356135366365393763656535383036313962333830643162
+31373834646164643835313264316465356531616366366435346162333339623163373638656538
+32663264386136623639383730653334316239333361633735366132646262653665336432663234
+37653033376232633939633661306538616166366432323863653734643232313132303664313261
+33383037633835393432333830313662366230656633313961656437656632393630313134336430
+37396234613734316233343664333634373738373436353236383131643335303939366235363738
+35653766363134376536393261346231336234656536643238306562396331653765366433623934
+30623137336237343730613532346466356131333765383039373237313434353666653733383461
+62323861656665626238656531353430613137656263343639323461373536373233376538383736
+35383861356637626531313961643736613463623036393566386662393438303034376633646531
+65386433393835383633373033613866613032346535346365363139383732613961316135623537
+30653735353138373832626565353563396632613362616465356330356532343635616135323464
+62373834623261336233613238633063646131313530303031656232326664636163343436653462
+33376661333636353938633865333739646436366265663762646631656133326433646166326263
+35363233356236323438666437613130386135313334323937616233613133336536303363383837
+36376461656530333865656439376539383463366439323166616465616231306130313136643366
+38333161366334623432353136323733623963623738393334343137393532373632363233343366
+31643139353639333430373135333366343865633530366535373665333037363431306361383763
+37643932363739663339376330383265663637623961363739306238616565663036303331386433
+34363963633831303966633133356563663534353365316365303039353464343433316563393431
+37656233343937366235623538326539316333306130323134626265613437643161393162346636
+32633337663730626631626332653236646465633432623631643830356534643235303862626131
+39386535306264306639333632376531663834323862346263653230393964646330356265373133
+37653831653366303063663861306563653336646430363037366434626435363433336566343230
+34616665373136663562326636383832636332326163393065333331323764333864643335366263
+39336132643131633064653966376461626537386366646236383566636330626537353666333462
+62306164373561336161646132663964363137653333303231646333336139313265363136613434
+35313736663136303632396430323265386665353537313465333837623064313530396464663630
+39373133613965376135663334323634653762373464666363356431363435313439633936373334
+66636132613838396161376537363436633335353133313662303262316633653964396233653039
+34343465656665333766336265636266303331386363376539346137333633643564303063336265
+64613966373236306536393963383236333766646230353430303534333937353037323531646339
+31386239666433313637303164363066376335363937363766396336633661656637303237323564
+65386165396437336239636136316234633239313265323136313066343333303661666162336538
+30343431653034616134306561393836303033376230303038366339323165316364653766316663
+38623632386635633066613666633231656539303931393233393562666663313937323436663063
+62393866653232646538316261316463343539653765646137653230656637353064333538333434
+64656666323564303238313866313266643934663530636564653966393731643465346166323964
+62393865323266343764336363336462616438303061356435633762313161353833373338663931
+32333835613864636531353131363765633237666134323236366361383532383963663332666664
+34626434386534313435373333373266346464323164373564333666393735323564303034346330
+38383361373436396661623063666661393035613631333132666165333865336265626438396639
+32313637663062653334353136616536633630366666346538333430633834356366303336646136
+30643863623466363534323738656236373434303538353133386233396333396438663463636539
+61346436373363646335396135396265353865633162393038633537376435636562613362623966
+35323131616166643637306664373162373437626332646634366665333166623634323163373634
+34316665373162383430343565623636373838353234313562613131346534373030646133346238
+31363332303638306134386436613962643033366338646236336462333935373336643937343164
+34326137656536343635666639333437376365303663613238663566353163356536613766653635
+30353233313632306162646664643862666636363438663564353932383662306139646535663932
+34643232386332346665666232643536343263343539643062623666363962666339316631623930
+36326139616539336138623332633361363230316261643430643034633331363838666363623062
+61363736633337646361616137303765393334323763333933353938343030363734346462376262
+62306338613633623930636463613331386366633565393362396331363134613662323239326635
+33373532646130663936633836313736623630363566366539616232323762613437316331653436
+64373136666562303165356664366366313961333665633361346634363336623164656437636165
+38613639386233333834613265636539343837646133373761323238323032313134303933303561
+31353336326235353365363439663265383834623538653538663437633435333161643163356537
+61356263393861613639343362373439386532323562313939656130353039646438336361313638
+38643535663230336135313533633937323631623830373135613633316439356462396131303730
+38616562663466663430613734613731623432633466346136633166346434356161313839363135
+66653962633235326538633731346534633433393236383535343065376630653537356363663936
+31396437316361366436373039656266656430383261316238306432376230376361333931316166
+38616266323866303336613036353935303963373565393735353066303238326239643266366566
+34633130366638303630383263616363303933633065623435336339663431343637343364386134
+32386431646139653162366261326566316363343034333066323531633839653063396531356165
+63353134663266646436613965353633353331336465633365396663646236633238653134666237
+33613338376530383239636333316366306337376637353461653534663738363037613966353531
+38353166393165366536333438623064326561366239343238646430366562313537346130303534
+66373637326431663939653963636432386632333836636230306437373139373535653562386561
+38353965373332626634616164376431643333313933313433313962663035323062636432616533
+65386464626131393262653939383431363565353039306434373430656266303566613265633539
+33306435326334636532306530356264323062393463653862326536363131623064346233636335
+34393164393331376166333239346238666438383861373736333632626565396266373266326133
+66613665303539383464383961393930323633633062386130376461326230633661666639323736
+65646662626561626166626437306334353962373062353634646636616464363134333238623935
+34616636636265303633646436623765616165653966623261393863303136303133316561633461
+33366632656437343364646634393335346165306661656237306165373262656234333162323430
+36313733363630313039306134303339316365386133363337333463643663326435616638323936
+30626634363965633364643230393135363265383538613563613066623466383033343964353734
+32646638303333373738633061343730316638306666326530333563313737363166343831353265
+38376462346464623133653964633933346138393033386132656364323934643962323334333935
+3161

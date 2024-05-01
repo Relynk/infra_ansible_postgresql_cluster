@@ -11,7 +11,9 @@
 
 # if dcs_exists: false and dcs_type: "etcd"
 [etcd_cluster]  # recommendation: 3, or 5-7 nodes
-localhost
+10.0.20.10 ansible_ssh_private_key_file='../../secrets/pg-vm/0/key'
+10.0.20.11 ansible_ssh_private_key_file='../../secrets/pg-vm/1/key'
+10.0.20.12 ansible_ssh_private_key_file='../../secrets/pg-vm/2/key'
 # 10.128.64.142
 # 10.128.64.143
 
@@ -25,7 +27,9 @@ localhost
 
 # if with_haproxy_load_balancing: true
 [balancers]
-localhost # balancer_tags="datacenter=dc1"
+10.0.20.10 ansible_ssh_private_key_file='../../secrets/pg-vm/0/key' # balancer_tags="datacenter=dc1"
+10.0.20.11 ansible_ssh_private_key_file='../../secrets/pg-vm/1/key'
+10.0.20.12 ansible_ssh_private_key_file='../../secrets/pg-vm/2/key'
 #10.128.64.142 # balancer_tags="datacenter=dc1"
 #10.128.64.143 # balancer_tags="datacenter=dc1"
 #10.128.64.144 balancer_tags="datacenter=dc2"
@@ -33,9 +37,11 @@ localhost # balancer_tags="datacenter=dc1"
 
 # PostgreSQL nodes
 [master]
-localhost hostname=pgnode01 postgresql_exists=false # patroni_tags="datacenter=dc1"
+10.0.20.10 ansible_ssh_private_key_file='../../secrets/pg-vm/0/key' hostname=pgnode01 postgresql_exists=false # patroni_tags="datacenter=dc1"
 
 [replica]
+10.0.20.11 ansible_ssh_private_key_file='../../secrets/pg-vm/1/key' hostname=pgnode02 postgresql_exists=false
+10.0.20.12 ansible_ssh_private_key_file='../../secrets/pg-vm/2/key' hostname=pgnode03 postgresql_exists=false
 #10.128.64.142 hostname=pgnode02 postgresql_exists=false # patroni_tags="datacenter=dc1"
 #10.128.64.143 hostname=pgnode03 postgresql_exists=false # patroni_tags="datacenter=dc1"
 #10.128.64.144 hostname=pgnode04 postgresql_exists=false patroni_tags="datacenter=dc2"
@@ -52,9 +58,8 @@ replica
 # Connection settings
 [all:vars]
 ansible_connection='ssh'
-ansible_ssh_port='5010'
-ansible_user='relynk_admin_pg'
-ansible_ssh_pass='devpass1234!'  # "sshpass" package is required for use "ansible_ssh_pass"
+ansible_ssh_port='22'
+ansible_user='relynk_pg_admin'
 #ansible_ssh_private_key_file=
 ansible_python_interpreter='/usr/bin/env python3'
 
